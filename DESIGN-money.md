@@ -2048,6 +2048,11 @@ treasurer to settle; it is never put to the conflict chooser. The merge runs bef
 so `syncCharges` finds the server's charges already there and raises none of them again. A
 device with no base still keeps its own charges whole (nothing tells it which side changed what),
 and a forgiveness the other copy had is still logged and said, matched by `chargeMatchKey` too.
+Two charges in one copy with the same match key (which `syncCharges` should never leave) are
+paired with the other copies' by their order: the first with the first, the second with the
+second. A charge raised on both devices since the base, for the same amount, is the same charge
+whichever day each raised it. When the server deleted a charge's scout and this device changed
+the charge, the note says the scout was deleted on another device.
 
 **Phase 2 — split events out. ✅ BUILT.** `state.events[]` now holds every meeting and the
 calendar half of every activity; `meetings[]` is emptied (not deleted — an older build reading the

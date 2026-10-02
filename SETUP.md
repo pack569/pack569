@@ -816,6 +816,12 @@ A format can be skipped. If the release that raised it to 4 (storefront cash dep
 that raised it to 5 (the sync decisions log) ship together, nothing breaks: a pack at 3 goes
 straight to 5, and every page at 3 or 4 holds and asks for a reload as above.
 
+When this change (format 5) first reaches a device that has been away, that device has no record
+of the last copy it synced. If nothing on it is unsent money (a sale, payment, hand-out or a
+changed amount the server doesn't have) and it is behind the pack, it takes the pack's copy
+without asking. Any other offline edits on it, such as RSVPs or a scout's details, are replaced by
+the pack's copy that one time. If it does hold unsent money, it asks which copy to keep.
+
 If a reload does **not** clear it, the record's `fmt` is higher than any page you serve. That
 happens in two ways:
 

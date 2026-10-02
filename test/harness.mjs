@@ -1050,12 +1050,12 @@ const SYNC_BASE_FNS = ['SYNC_BASE_KEY', 'SYNC_UNSYNCED_KEY', 'syncLocal', 'SYNC_
   'syncSame', 'syncRecKey', 'syncKeyed', 'syncPrimSet', 'syncThreeWay', 'syncItemSig', 'syncRecNorm', 'syncThreeWayOf', 'syncApplyThreeWay',
   'SYNC_LOG_MAX', 'normalizeSyncLog', 'mergeSyncLog', 'syncServerWhen',
   // Sync fix round 1 — rule d's money check, charges by what they charge, the opening balance's lock.
-  'syncMoneySubset', 'syncChargeKey', 'SYNC_OPENING_LOCKED_WHY', 'openingLockedWhy', 'entryAfterOpening', 'arrOf'];
+  'syncMoneySubset', 'syncChargeKey', 'SYNC_OPENING_LOCKED_WHY', 'SYNC_OPENING_LOCKED_WHY_THERE', 'openingLockedWhy', 'entryAfterOpening', 'arrOf'];
 // …and the words the chooser and the log use for an item (leaders only).
 const SYNC_WORDS_FNS = ['SYNC_AREA_LABELS', 'SYNC_LIST_LABELS', 'SYNC_FIELD_LABELS', 'syncFieldWords', 'syncCap', 'syncClip', 'syncAt', 'syncScoutName',
   'syncRecName', 'syncItemTitle', 'syncValueText', 'syncItemView', 'syncWhenText', 'syncServerWho', 'syncDecisionEntries', 'eventLabel', 'fmtTimeRange',
   'fmtClock', 'fmtDate', 'fmtDateShort', 'monthLabel', 'ledgerLogWhen', 'fmt', 'ledgerStampClean',
-  'syncRecordFigures', 'syncItemList', 'syncItemBaseText', 'SYNC_BOTH_NUMBER', 'syncChildrenText', 'SYNC_LOG_HIDDEN', 'SYNC_LOG_MONEY', 'syncItemIsMoney'];
+  'syncRecordFigures', 'syncItemList', 'syncItemBaseText', 'syncHiddenText', 'SYNC_BOTH_NUMBER', 'syncChildrenText', 'SYNC_LOG_HIDDEN', 'SYNC_LOG_MONEY', 'syncItemIsMoney'];
 // Phase 3, C8 (C8-4) — what the merge and the copy chooser read of closed books.
 const C8_SYNC_FNS = [SR_SYNC_STUBS, ...SYNC_BASE_FNS, ...SYNC_WORDS_FNS, 'closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy', 'closedBookRows', 'statementLookupRows',
@@ -19949,7 +19949,8 @@ test('stopgap, Firestore: a deleted scout, fundraiser or product does not come b
   b.push();
   check(server(), 'the stale device saved last');
   // (Sync fix round 1, treasurer 6b — the server's version kept is logged for money records: the scout's sale, the hand-out's product.)
-  eq(server().syncLog.map((e) => [e.item, e.kept, e.how]).sort(), [['Popcorn product · Caramel', 'server', 'all'], ['Scout · Ada', 'server', 'all']], 'what was logged');
+  // (Final treasurer check B3 — and the fundraiser: a fundraiser is money in the log now.)
+  eq(server().syncLog.map((e) => [e.item, e.kept, e.how]).sort(), [['Fundraiser · Raffle', 'server', 'all'], ['Popcorn product · Caramel', 'server', 'all'], ['Scout · Ada', 'server', 'all']], 'what was logged');
   eq([Object.keys(server().gone.fundraisers), Object.keys(server().gone.sales), Object.keys(server().gone.scouts), Object.keys(server().gone.products)],
     [['f1'], ['fs1'], ['s1'], ['p1']], 'the marks (a fundraiser is one; fs1 is the scout’s own sale)');
   a.hear();
@@ -20541,7 +20542,7 @@ atest('stopgap, api: a deleted scout, fundraiser or product does not come back f
   a.run("pickSyncItem(rowChoice(), '.fundraisers#f1', 'mine'); saveRowChoices()");
   await settle([a], 800);
   st = server();
-  eq(st.syncLog.map((e) => [e.item, e.keptValue, e.serverValue]), [['Fundraiser · Raffle', 'Deleted', 'Raffle']], 'the decision');   // (the server's version by its figures: treasurer 6c)
+  eq(st.syncLog.map((e) => [e.item, e.keptValue, e.serverValue]), [['Fundraiser · Raffle', 'Deleted', 'Raffle · 2 sales ($10.00)']], 'the decision');   // (its figures, final check B3)   // (the server's version by its figures: treasurer 6c)
   eq([st.fundraisers.length, st.scouts.map((x) => x.id), st.inventory.products.length, eIds(st), st.inventory.distributions.length, st.ledger.map((l) => l.scoutId || '')],
     [0, ['s2'], 0, ['old2', 'x2'], 0, ['', '']], 'the deleting device saved last');
 });
@@ -21348,7 +21349,7 @@ test('C2: each change to an entry is one logged edit — every field it changed,
   eq(p.get('log().length'), 7, 'a change to the same value was logged');
   // The amount commits once, on change — not a keystroke at a time (each would be an edit).
   // (Sync fix round 1 — and the goals, now logged on the book too.)
-  ok(/var LEDGER_NOT_LIVE = \['led-amount', 'book-opening', 'goal', 'cash-goal', 'stretch-goal'\];/.test(SCRIPT) &&
+  ok(/var LEDGER_NOT_LIVE = \['led-amount', 'book-opening', 'goal', 'cash-goal', 'stretch-goal', 'inv-order-total'\];/.test(SCRIPT) &&
      /if \(el && LEDGER_NOT_LIVE\.indexOf\(el\.getAttribute\('data-ch'\)\) === -1\) \{/.test(SCRIPT), 'the amount is committed as it is typed');
 });
 
@@ -27929,7 +27930,7 @@ const C6_CHOOSER_FNS = ['esc', 'fmt', 'fmtDateShort', 'ledgerCap', 'ledgerLogVal
   'rowItemSides', 'rowItemMixed', 'ROW_MIXED_NOTE',
   // Sync conflicts (Keith, 2026-10-02) — the items both copies changed, beside the entries, and "Keep all".
   'SYNC_CHOOSER_TITLE', 'SYNC_CHOOSER_KEPT', 'SYNC_CHOOSER_ENTRIES', 'SYNC_KEEP_ALL_MINE', 'SYNC_KEEP_ALL_THEIRS', 'SYNC_MINE_HEAD', 'SYNC_THEIRS_HEAD',
-  'SYNC_MINE_SUB', 'syncChooserIntro', 'renderSyncItems', 'SYNC_PICK_NEEDED', 'SYNC_BEFORE', 'syncKeepWords'];
+  'SYNC_MINE_SUB', 'syncChooserIntro', 'renderSyncItems', 'SYNC_PICK_NEEDED', 'SYNC_BEFORE', 'syncKeepWords', 'SYNC_KEEP_SCOUT', 'SYNC_KEEP_PRODUCT'];
 function c6Chooser(items, picks, more) {
   const ctx = vm.createContext({});
   vm.runInContext(`${C6_CHOOSER_FNS.map(decl).join('\n')}
@@ -33894,6 +33895,13 @@ test('sync fix (security 1, treasurer 4): syncMoneySubset finds every money row 
   }
   const m = cp(); m.entries.push({ id: 'e2' });
   eq(x.syncMoneySubset(m, Object.assign(cp(), { gone: { entries: { e2: 5 } } })), true, 'a row the server deleted is not this device’s work');
+  // Final security check of ff0672a (A) — the same ids, an amount changed here: this device's work too.
+  for (const [what, f] of [['a shift’s sales', (c) => { c.storefronts[0].blocks[0].salesCents = 4500; }], ['a ledger amount', (c) => { c.ledger[0].amountCents = 900; }],
+    ['a sale’s amount', (c) => { c.entries[0].salesCents = 100; }], ['a hand-out’s containers', (c) => { c.inventory.distributions[0].containers = 2; }],
+    ['cash from sales', (c) => { c.storefronts[0].blocks[0].salesCash[0].cents = 9; }]]) {
+    const c = cp(); f(c);
+    eq(x.syncMoneySubset(c, cp()), false, 'missed a changed amount: ' + what);
+  }
   ok(/onlyHere: function \(\) \{ return !syncMoneySubset\(state, remoteNorm\) \|\| closedBooksLost\(remoteNorm\.closedBooks, state\.closedBooks\)\.length > 0; \}/.test(slice('onRemoteSnap')), 'the plan is not asked about it');
   // The plan: behind and something only here, or a close-out between, is asked. Mutation check: the money check ignored, it is taken.
   const plan = (src, o) => { const c = vm.createContext({}); vm.runInContext(src, c); c.o = o; return vm.runInContext('syncFirstPlan(o)', c); };
@@ -33944,9 +33952,10 @@ test('sync fix (security 3, 5, 6, 8): the log keeps no contact detail, note or i
   eq(log.map((e) => [e.field, e.keptValue, e.serverValue]).sort(), [['Calendar event', 'Lake · Oct 11', 'Blank'], ['Email', 'Changed', 'Changed'], ['Note', 'Changed', 'Changed'], ['Phone', 'Changed', 'Not set']].sort(), 'the values');
   // Load: an '@' scrubbed; a bad or far-future time dropped; one id once, as clipped; the key cut to 200.
   const now = Date.now(), iso = (ms) => new Date(ms).toISOString();
-  const got = J(x.normalizeSyncLog([{ id: 'a', at: iso(now), serverValue: 'someone@example.com', keptValue: 'k', key: 'k'.repeat(300) }, { id: 'b', at: 'yesterday' }, { id: 'c', at: iso(now + 3 * 86400000) },
-    { id: 'd'.repeat(50), at: iso(now) }, { id: 'd'.repeat(40) + 'zz', at: iso(now) }]));
-  eq(got.map((e) => [e.id.length, e.serverValue, e.key.length]), [[1, 'Changed', 200], [40, '', 0]], 'the log as loaded');
+  // (Final security check of ff0672a — never dropped by this device's clock: one 3 days ahead is kept, sorted last; '@' in the item too.)
+  const got = J(x.normalizeSyncLog([{ id: 'a', at: iso(now), serverValue: 'someone@example.com', keptValue: 'k', key: 'k'.repeat(300), item: 'Leader · pat@example.com' },
+    { id: 'b', at: 'yesterday' }, { id: 'c', at: iso(now + 3 * 86400000) }, { id: 'd'.repeat(50), at: iso(now) }, { id: 'd'.repeat(40) + 'zz', at: iso(now) }]));
+  eq(got.map((e) => [e.id.length, e.serverValue, e.key.length, e.item]), [[1, 'Changed', 200, 'Changed'], [40, '', 0, ''], [1, '', 0, '']], 'the log as loaded');
   // The marker is written again after another tab cleared it.
   const c = sbStore();
   vm.runInContext("syncMarkUnsynced(); delete store[SYNC_UNSYNCED_KEY]; syncMarkUnsynced();", c);
@@ -34002,27 +34011,41 @@ test('sync fix (treasurer 2): a scout or product the server deleted, that this d
   const r = x.syncThreeWay(b, m, t, {});
   eq(J(r.items.map((it) => [it.key, it.gone, it.deleted])), [['.scouts#s2', 'scouts', 'theirs'], ['.inventory.products#p1', 'products', 'theirs']], 'the items');
   const v = J(r.items.map((it) => x.syncItemView(it, [m, t, b])));
-  eq(v.map((w) => [w.title, w.lines[0].mine, w.lines[0].theirs]), [['Scout · Bo', 'Not on the server yet: 2 popcorn sales ($45.00), 1 hand-out (1 case)', 'Deleted'],
-    ['Popcorn product · Caramel', 'Not on the server yet: 1 hand-out (1 case)', 'Deleted']], 'the words');
+  eq(v.map((w) => [w.title, w.lines[0].mine, w.lines[0].theirs]), [['Scout · Bo', 'Not on the server yet: 2 popcorn sales ($45.00), 1 hand-out (1 container)', 'Deleted'],
+    ['Popcorn product · Caramel', 'Not on the server yet: 1 hand-out (1 container)', 'Deleted']], 'the words');
   // Nothing recorded for them since the base: nothing asked (the marks take them, as before).
   eq(J(x.syncThreeWay(b, seed(), t, {}).items), [], 'asked with nothing recorded');
 });
 
-test('sync fix (treasurer 3): the opening balance never moves under a reconciled book; what was not kept is logged and said', () => {
-  const ctx = vm.createContext({});
-  vm.runInContext(`var logged = [], sync = { docId: 'P' };
-    function logLedger(op, row, more) { logged.push([op, row, more]); state.ledgerLog.push({ op: op, row: row, f: more.f, why: more.why }); }
-    ${[...SYNC_BASE_FNS, 'fmtDateShort'].map(decl).join('\n')}
-    var base = { book: { openingCents: 1000, openingDate: '2026-07-01', reconciledThrough: '' }, ledger: [], ledgerLog: [] };
-    var state = { book: { openingCents: 1000, openingDate: '2026-07-01', reconciledThrough: '2026-08-31' }, ledger: [], ledgerLog: [] };
-    var theirs = { book: { openingCents: 2500, openingDate: '2026-07-01', reconciledThrough: '' }, ledger: [], ledgerLog: [] };
-    var three = syncThreeWay(base, state, theirs, {}); three.theirs = theirs;
-    var look = syncApplyThreeWay(three, {}); var again = syncApplyThreeWay(three, {});`, ctx);
-  const g = (js) => J(vm.runInContext(js, ctx));
-  eq(g('[state.book.openingCents, look.map(function (l) { return [l.kind, l.discarded, l.kept]; })]'), [1000, [['openinglocked', 2500, 1000]]], 'the lock');
-  eq(g('logged'), [['resolve', 'book', { f: { openingCents: [2500, 1000] }, why: g('SYNC_OPENING_LOCKED_WHY') }]], 'logged once, though run twice');
-  eq(g('SYNC_OPENING_LOCKED_WHY'), 'Not kept: the book was reconciled on another device before this change reached it, and a reconciled book’s opening balance is locked. ' +
-    'If the opening was wrong, record the difference as an adjusting entry dated today and say why.', 'the words');
+test('sync fix (treasurer 3; final check B1): the opening balance never moves under a locked book; what was not kept is logged and said, naming the right device', () => {
+  const run = (hereLocked) => {
+    const ctx = vm.createContext({});
+    vm.runInContext(`var logged = [], sync = { docId: 'P' };
+      function logLedger(op, row, more) { logged.push([op, row, more]); state.ledgerLog.push({ op: op, row: row, f: more.f, why: more.why }); }
+      ${[...SYNC_BASE_FNS, 'fmtDateShort', 'fmt', 'syncOpeningLockedNote', 'SYNC_OPENING_LOCKED_WHY_THERE'].map(decl).join('\n')}
+      var book = function (cents, date, rt) { return { openingCents: cents, openingDate: date, reconciledThrough: rt }; };
+      var base = { book: book(1000, '2026-07-01', ''), ledger: [], ledgerLog: [] };
+      var state = ${hereLocked} ? { book: book(1000, '2026-07-01', '2026-08-31'), ledger: [], ledgerLog: [] } : { book: book(2500, '2026-07-02', ''), ledger: [], ledgerLog: [] };
+      var theirs = ${hereLocked} ? { book: book(2500, '2026-07-02', ''), ledger: [], ledgerLog: [] } : { book: book(1000, '2026-07-01', '2026-08-31'), ledger: [], ledgerLog: [] };
+      var three = syncThreeWay(base, state, theirs, {}); three.theirs = theirs;
+      var look = syncApplyThreeWay(three, {}); syncApplyThreeWay(three, {});`, ctx);
+    return (js) => J(vm.runInContext(js, ctx));
+  };
+  // This book is reconciled; the server changed the opening: the server's change is not kept ('there').
+  let g = run(true);
+  eq(g('[state.book.openingCents, state.book.openingDate, look.map(function (l) { return [l.kind, l.side, l.discarded, l.kept]; })]'),
+    [1000, '2026-07-01', [['openinglocked', 'there', 2500, 1000]]], 'locked here');
+  eq(g('logged'), [['resolve', 'book', { f: { openingCents: [2500, 1000], openingDate: ['2026-07-02', '2026-07-01'] }, why: g('SYNC_OPENING_LOCKED_WHY_THERE') }]], 'logged once, though run twice');
+  eq(g('syncOpeningLockedNote(look[0])'), 'A change to the opening balance ($25.00) made on another device wasn’t kept: this book was reconciled first, so its opening balance is locked. ' +
+    'It stays $10.00. If the opening was wrong, record the difference as an adjusting entry dated today and say why.', 'the note, there');
+  // The server's book is reconciled; this device changed the opening: this device's change is not kept ('here').
+  g = run(false);
+  eq(g('[state.book.openingCents, look.map(function (l) { return [l.side, l.discarded, l.kept]; }), logged[0][2].why === SYNC_OPENING_LOCKED_WHY]'), [1000, [['here', 2500, 1000]], true], 'locked there');
+  eq(g('syncOpeningLockedNote(look[0])'), 'Your change to the opening balance ($25.00) wasn’t kept: the book was reconciled on another device first, so its opening balance is locked. ' +
+    'It stays $10.00. If the opening was wrong, record the difference as an adjusting entry dated today and say why.', 'the note, here');
+  eq([g('SYNC_OPENING_LOCKED_WHY'), g('SYNC_OPENING_LOCKED_WHY_THERE')],
+    ['Not kept: the book was reconciled, or had entries ticked against a statement, on another device before this change reached it, so its opening balance is locked. If the opening was wrong, record the difference as an adjusting entry dated today and say why.',
+      'Not kept: this change came from another device after this book was reconciled, or had entries ticked against a statement, here, so its opening balance is locked. If the opening was wrong, record the difference as an adjusting entry dated today and say why.'], 'the reasons');
 });
 
 test('sync fix (treasurer 5, 6): the value before either change is shown and logged; money is logged whichever side is kept; Keep all says so; a CSV', () => {
@@ -34063,7 +34086,74 @@ test('sync fix (pre-existing gap): a budget line removed takes its collection ma
   ok(/if \(ch === 'commission'\) \{ logSettingEdit\('commissionPct', el\.value\); commit\(\); return; \}/.test(slice('handleChange')) &&
     /if \(ch === 'cash-scout-pct'\) \{ logSettingEdit\('cashScoutPct', el\.value\); commit\(\); return; \}/.test(slice('handleChange')) &&
     /if \(ch === 'cash-via-te'\) \{ logSettingEdit\('cashThroughTrailsEnd', el\.checked\); commit\(\); return; \}/.test(slice('handleChange')), 'the settings are logged');
-  ok(['goal', 'cash-goal', 'stretch-goal'].every((k) => decl('LEDGER_NOT_LIVE').includes("'" + k + "'")), 'a goal is logged a keystroke at a time');
+  ok(['goal', 'cash-goal', 'stretch-goal', 'inv-order-total'].every((k) => decl('LEDGER_NOT_LIVE').includes("'" + k + "'")), 'a goal is logged a keystroke at a time');
+  // (Final treasurer check — and the popcorn order's commission and total.)
+  ok(/if \(ch === 'inv-order-total'\) \{ logSettingEdit\('orderTotalCents', toCents\(el\.value\), state\.inventory\);/.test(slice('handleChange')) &&
+    /if \(ch === 'inv-comm'\) \{ logSettingEdit\('commissionPct', el\.value, state\.inventory, 'invCommissionPct'\);/.test(slice('handleChange')), 'the order settings');
+  const ls = vm.createContext({});
+  vm.runInContext(`var logged = [], state = { inventory: { commissionPct: '30' } }; function logLedger(op, row, more) { logged.push([op, row, more]); }
+    ${decl('logSettingEdit')} logSettingEdit('commissionPct', '33', state.inventory, 'invCommissionPct'); logSettingEdit('commissionPct', '33', state.inventory, 'invCommissionPct');`, ls);
+  eq(J(vm.runInContext('[state.inventory.commissionPct, logged]', ls)), ['33', [['edit', 'book', { f: { invCommissionPct: ['30', '33'] } }]]], 'one change, one event');
+});
+
+/* ---- Final checks of ff0672a: security A and lows, treasurer B1–B3 and follow-ups. ---- */
+test('sync final (B2): keeping a scout the server deleted brings back every sale this device holds for them, not only the new one', () => {
+  // A deletes Ada (her sales x1 and old1 go, marked); B, still holding them, records another (bs9) and saves after.
+  const { a, b, server } = fsGonePair();
+  a.run(DEL_SCOUT); a.push();
+  b.run("state.entries.push({ id: 'bs9', scoutId: 's1', kind: 'wagon', date: '', salesCents: 300, donationsCents: 0 }); commit()");
+  b.hear(); b.push();
+  const keys = b.get('rowChoice() ? rowChoice().fields.map(function (it) { return it.key; }) : null');
+  ok(keys && keys.indexOf('.scouts#s1') !== -1, 'B was not asked about Ada: ' + JSON.stringify(keys));
+  b.run("pickSyncItem(rowChoice(), '.scouts#s1', 'mine'); pickSyncItem(rowChoice(), '*', 'mine'); saveRowChoices()"); b.push();
+  const s = server();
+  eq([s.scouts.map((x) => x.id).sort(), eIds(s).filter((id) => ['x1', 'old1', 'bs9'].indexOf(id) !== -1).sort(), s.gone.entries.x1 < 0, s.gone.scouts.s1 < 0],
+    [['s1', 's2'], ['bs9', 'old1', 'x1'], true, true], 'Ada and all her sales');
+  const mut = b.get('rowChoice()');
+  eq(mut, null, 'the choice was left waiting');
+  // The words under "Your change on this device".
+  ok(/SYNC_KEEP_SCOUT : SYNC_KEEP_PRODUCT/.test(slice('renderSyncItems')), 'the chooser does not say what keeping it does');
+  eq([decl('SYNC_KEEP_SCOUT').includes('Keeping this puts the scout back, with every sale and hand-out this device has for them.'),
+    decl('SYNC_KEEP_PRODUCT').includes('Keeping this puts the product back, with every hand-out this device has for it.')], [true, true], 'the words');
+});
+
+test('sync final (B3): a fundraiser or storefront counts as money in the log; a deleted fundraiser kept as the server’s is logged, with its figures', () => {
+  const x = sandbox([...SYNC_BASE_FNS, ...SYNC_WORDS_FNS]);
+  vm.runInContext("var n = 0; function uid() { n += 1; return 'u' + n; }", x);
+  const b = { fundraisers: [{ id: 'f1', name: 'Raffle', sales: [{ id: 'fs1', cents: 500 }] }], gone: {} };
+  const m = J(b), t = { fundraisers: [], gone: { fundraisers: { f1: 5 } } };
+  m.fundraisers[0].sales.push({ id: 'fs2', cents: 300 });
+  const r = x.syncThreeWay(b, m, t, {});
+  const log = J(x.syncDecisionEntries(r.items, { '.fundraisers#f1': 'theirs' }, [m, t, b], {}, { name: 'Pat', uid: '' }, {}));
+  eq(log.map((e) => [e.item, e.kept, e.serverValue, e.mineValue, e.baseValue]), [['Fundraiser · Raffle', 'server', 'Deleted', 'Raffle · 2 sales ($8.00)', 'Raffle · 1 sale ($5.00)']], 'the entry');
+  const sf = { id: 'sf1', name: 'Grocery', date: '2026-10-05', blocks: [{ id: 'b1', salesCents: 4000, donationsCents: 500, salesCash: [{ reportId: 'r', cents: 1200 }] }, { id: 'b2', salesCents: 1000, donationsCents: 0 }] };
+  eq(x.syncRecordFigures('storefronts', sf, []), 'Grocery · Oct 5 · 2 shifts · sales $50.00 · cash donations $5.00 · cash from sales $12.00', 'a storefront');
+  ok(['fundraisers', 'storefronts'].every((k) => x.SYNC_LOG_MONEY.lists.indexOf(k) !== -1), 'not money');
+});
+
+test('sync final (security lows): the chooser never shows a contact detail, an account or a note, nor before either change', () => {
+  const x = sandbox([...SYNC_BASE_FNS, ...SYNC_WORDS_FNS]);
+  const b = { leaders: [{ id: 'L1', name: 'Pat', email: 'old address', uid: 'acct-1', notes: 'gate code' }] }, m = J(b), t = J(b);
+  m.leaders[0].email = 'home address'; t.leaders[0].email = '';
+  m.leaders[0].uid = 'acct-2'; t.leaders[0].uid = 'acct-3';
+  m.leaders[0].notes = 'new code'; t.leaders[0].notes = 'other code';
+  const v = J(x.syncThreeWay(b, m, t, {}).items.map((it) => x.syncItemView(it, [m, t, b])));
+  const all = JSON.stringify(v);
+  ok(!/address|acct-|code/.test(all), 'shown: ' + all);
+  eq(v[0].lines.map((l) => [l.label, l.base, l.mine, l.theirs]), [['Email', 'Set', 'Changed', 'Not set'], ['Signed-in account', 'Set', 'Changed', 'Changed'], ['Notes', 'Set', 'Changed', 'Changed']], 'the lines');
+});
+
+test('sync final (charges follow-ups): one charge raised on both devices on different days is one; a changed charge of a scout deleted there says so', () => {
+  const x = sandbox([...SYNC_BASE_FNS]);
+  const key = (c) => c.lineId + '|' + c.scoutId;
+  const ch = (id, o) => Object.assign({ id, scoutId: 's1', lineId: 'L1', amountCents: 8000, date: '2026-09-01', waivedBy: '' }, o || {});
+  let r = J(x.syncThreeWay({ charges: [] }, { charges: [ch('a', { date: '2026-09-02' })], scouts: [] }, { charges: [ch('z', { date: '2026-09-05' })], scouts: [] }, {}, { chargeKey: key }));
+  eq([r.merged.charges.map((c) => [c.id, c.date]), r.look], [[['a', '2026-09-02']], []], 'raised twice');
+  r = J(x.syncThreeWay({ charges: [ch('a')] }, { charges: [ch('a', { waivedBy: 't1' })], scouts: [{ id: 's1' }] }, { charges: [], scouts: [], gone: { scouts: { s1: 5 } } }, {}, { chargeKey: key }));
+  eq(r.look.map((l) => [l.kind, l.scoutGone]), [['chargeboth', true]], 'the note’s flag');
+  ok(/it\.scoutGone \? ' was changed on this device, and the scout was deleted on another device\.'/.test(slice('noteLedgerLookFromMerge')), 'the words');
+  ok(/paired with the other copies' by their order/.test(readFileSync(join(ROOT, 'DESIGN-money.md'), 'utf8')), 'DESIGN-money.md');
+  ok(/Any other offline edits on it, such as RSVPs or a scout's details, are replaced by\s+the pack's copy that one time\./.test(readFileSync(join(ROOT, 'SETUP.md'), 'utf8')), 'SETUP.md’s note on rule (d)');
 });
 
 /* ---------------- report ---------------- */

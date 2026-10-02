@@ -10229,6 +10229,7 @@
     // Pre-existing gap (sync fix round 1) — the pack's money settings, logged on the book as the deposit days are.
     commissionPct: 'commission rate (%)', commissionPctOnline: 'online commission rate (%)', cashScoutPct: 'scout credit on cash (%)',
     cashThroughTrailsEnd: 'cash goes through Trail’s End', goalCents: 'Trail’s End goal', stretchGoalCents: 'stretch goal', cashGoalCents: 'cash donations goal',
+    invCommissionPct: 'popcorn order commission (%)', orderTotalCents: 'popcorn order total',
     wagonViaTEFrom: 'wagon cash through Trail’s End from',
     depositFor: 'storefronts it covers', depositFrom: 'covers from', depositTo: 'covers to', notStorefront: 'not storefront cash'
   };
@@ -10236,7 +10237,7 @@
   // ({ line, scout, tier, statement, entry }: each id → name or ''). Pure given `names`.
   function ledgerLogValue(k, v, names) {
     if (v === null || v === undefined || v === '') return '(none)';
-    if (k === 'amountCents' || k === 'openingCents' || k === 'statementCents' || k === 'goalCents' || k === 'stretchGoalCents' || k === 'cashGoalCents') return typeof v === 'number' ? fmt(v) : String(v);
+    if (k === 'amountCents' || k === 'openingCents' || k === 'statementCents' || k === 'goalCents' || k === 'stretchGoalCents' || k === 'cashGoalCents' || k === 'orderTotalCents') return typeof v === 'number' ? fmt(v) : String(v);
     if (k === 'date' || k === 'openingDate' || k === 'reconciledThrough' || k === 'depositFrom' || k === 'depositTo') return fmtDateShort(String(v));
     // Item 11 — a source by the words the form shows it with (an unknown one as it is).
     if (k === 'source' && Object.prototype.hasOwnProperty.call(LEDGER_SOURCE_LABELS, v)) return LEDGER_SOURCE_LABELS[v];
@@ -10410,16 +10411,18 @@
   // is one logged event, and "2", "25", "25.0" are not three edits. A blank amount mid-typing
   // would otherwise be refused under the leader's fingers.
   // (Sync fix round 1 — and the goals, now logged on the book: one event a change, not a keystroke.)
-  // Sets the pack setting `k` (a top-level state key) to `v`, logging the change on the book when it is one.
-  function logSettingEdit(k, v) {
-    var was = state[k];
-    state[k] = v;
+  // Sets the pack setting `k` of `obj` (state, or state.inventory) to `v`, logging the change on the book, as `name`
+  // (k when not given), when it is one.
+  function logSettingEdit(k, v, obj, name) {
+    obj = obj || state;
+    var was = obj[k];
+    obj[k] = v;
     if (was === v) return;
     var f = {};
-    f[k] = [was === undefined ? null : was, v];
+    f[name || k] = [was === undefined ? null : was, v];
     logLedger('edit', 'book', { f: f });
   }
-  var LEDGER_NOT_LIVE = ['led-amount', 'book-opening', 'goal', 'cash-goal', 'stretch-goal'];
+  var LEDGER_NOT_LIVE = ['led-amount', 'book-opening', 'goal', 'cash-goal', 'stretch-goal', 'inv-order-total'];
   // The fields an edit can change (and so the ones an 'edit' event carries). The tick and its
   // stamps are 'tick'/'untick' events, not edits; ids and the E2 entry stamps never change.
   // Item 11 — and what a storefront cash deposit covers (labels, like the budget line).
@@ -18400,7 +18403,7 @@
     arrOf(look).forEach(function (it) {
       var key = it && (it.kind === 'voidtick' || it.kind === 'twostatements' || it.kind === 'voidlisted') && it.row ? it.kind + ':' + it.row.id
         : it && (it.kind === 'forgiven' || it.kind === 'chargeboth') && it.charge ? it.kind + ':' + it.charge.id
-        : it && it.kind === 'openinglocked' ? 'openinglocked:' + it.discarded + ':' + it.kept
+        : it && it.kind === 'openinglocked' ? 'openinglocked:' + it.side + ':' + it.discarded + ':' + it.kept
         : it && it.kind === 'scoutkept' && it.scout ? 'scoutkept:' + it.scout.id
         : it && it.kind === 'carrydiffers' && typeof it.id === 'string' ? 'carrydiffers:' + it.id + ':' + it.mine + ':' + it.theirs
         : it && it.kind === 'restorediff' && it.statement ? 'restorediff:' + it.statement.id + ':' + it.statement.nowCents
@@ -18409,8 +18412,9 @@
       seen[key] = true;
       notes.push(it.kind === 'forgiven'
         ? chargeLookName(it.charge) + ' was forgiven on another device, but that was lost when this device saved, so the family owes it again. Check it on Money · Dues & fees and forgive it again if it should be.'
-        : it.kind === 'openinglocked' ? 'An opening balance of ' + fmt(it.discarded || 0) + ' from another device was not kept; the book keeps ' + fmt(it.kept || 0) + '. ' + SYNC_OPENING_LOCKED_WHY.replace(/^Not kept: t/, 'T')
-        : it.kind === 'chargeboth' ? chargeLookName(it.charge) + ' was changed on this device and on another one, differently. This device’s version was kept. Check it on Money · Dues & fees.'
+        : it.kind === 'openinglocked' ? syncOpeningLockedNote(it)
+        : it.kind === 'chargeboth' ? chargeLookName(it.charge) + (it.scoutGone ? ' was changed on this device, and the scout was deleted on another device.'
+          : ' was changed on this device and on another one, differently.') + ' This device’s version was kept. Check it on Money · Dues & fees.'
         : it.kind === 'twostatements' ? ledgerTwoStatementsLook(it)
         : it.kind === 'voidlisted' ? ledgerVoidListedLook(it)
         : it.kind === 'restorediff' ? ledgerRestoreDiffLook(it.statement)
@@ -19088,6 +19092,26 @@
     function covered(list, there, log) {
       return arrOf(list).every(function (x) { return !x || typeof x.id !== 'string' || there[x.id] || (gone[log] && gone[log][x.id] > 0); });
     }
+    // Final security check of ff0672a (A) — and a money record both copies hold, whose amounts differ here: an amount
+    // changed offline is this device's work too. Every *Cents field (and a hand-out's containers, a cash entry's cents).
+    function figs(x) {
+      var o = {};
+      Object.keys(x || {}).forEach(function (k) { if (/Cents$/.test(k) || k === 'containers' || k === 'cents') o[k] = x[k]; });
+      return o;
+    }
+    function sameFigs(list, otherList, keyOf) {
+      var by = Object.create(null);
+      arrOf(otherList).forEach(function (y) { var k = y && keyOf(y); if (k) by[k] = y; });
+      return arrOf(list).every(function (x) { var k = x && keyOf(x); return !k || !by[k] || syncSame(figs(x), figs(by[k])); });
+    }
+    function idOf(x) { return typeof x.id === 'string' ? x.id : ''; }
+    function blocks(c) { var out = []; arrOf(c && c.storefronts).forEach(function (sf) { out = out.concat(arrOf(sf && sf.blocks)); }); return out; }
+    function cashRows(c) { var out = []; blocks(c).forEach(function (b) { out = out.concat(arrOf(b && b.salesCash)); }); return out; }
+    var amountsSame = sameFigs(arrOf(mine && mine.ledger).concat(arrOf(mine && mine.ledgerAside)), arrOf(theirs && theirs.ledger).concat(arrOf(theirs && theirs.ledgerAside)), idOf) &&
+      sameFigs(mine && mine.entries, theirs && theirs.entries, idOf) && sameFigs(sales(mine), sales(theirs), idOf) &&
+      sameFigs(mine && mine.inventory && mine.inventory.distributions, theirs && theirs.inventory && theirs.inventory.distributions, idOf) &&
+      sameFigs(blocks(mine), blocks(theirs), idOf) && sameFigs(cashRows(mine), cashRows(theirs), function (x) { return typeof x.reportId === 'string' ? x.reportId : ''; });
+    if (!amountsSame) return false;
     var ledgerThere = ids(theirs && theirs.ledgerAside, ids(theirs && theirs.ledger, Object.create(null)));
     var cashThere = Object.create(null);
     cash(theirs).forEach(function (r) { cashThere[r] = true; });
@@ -19260,13 +19284,16 @@
         cm.order.concat(ct.order.filter(function (kk) { return !cm.by[kk]; })).forEach(function (kk) {
           var b = cb.by[kk], m = cm.by[kk], t = ct.by[kk], got;
           var tgS = theirs && theirs.gone && theirs.gone.scouts;
-          if (syncSame(noId(m), noId(t))) got = m;
+          // Final treasurer check (follow-up) — raised on both devices since the base, the same amount: the same charge,
+          // whatever day each raised it.
+          var noDate = function (c) { var o = noId(c); if (o) delete o.date; return o; };
+          if (syncSame(noId(m), noId(t)) || (!b && m && t && m.amountCents === t.amountCents && syncSame(noDate(m), noDate(t)))) got = m;
           // The charges of a scout the server deleted (dropScout took them there) are left with the scout, for the
           // marks to settle: C7 keeps a scout any entry names, archived, and their charges with them.
           else if (!t && b && m && m.scoutId && tgS && tgS[m.scoutId] > 0 && syncSame(noId(b), noId(m))) got = m;
           else if (syncSame(noId(b), noId(m))) { n.theirs += 1; got = t && m ? Object.assign(clone(t), { id: m.id }) : t; }
           else if (syncSame(noId(b), noId(t))) { n.mine += 1; got = m; }
-          else { got = m; look.push({ kind: 'chargeboth', charge: clone(m || t) }); }
+          else { got = m; look.push({ kind: 'chargeboth', charge: clone(m || t), scoutGone: !t && !!(m && m.scoutId && tgS && tgS[m.scoutId] > 0) }); }
           // …and none for a scout this device deleted (its mark stands, and it isn't on this roster): the server's
           // copy raised it before the delete reached it.
           var mgS = mine && mine.gone && mine.gone.scouts, onRoster = got && arrOf(mine && mine.scouts).some(function (x) { return x && x.id === got.scoutId; });
@@ -19364,8 +19391,20 @@
   // opening differs from a copy whose opening is locked (openingLockedWhy: reconciled, or entries ticked), that copy's
   // opening is kept, logged on the book ('resolve', what was not kept first) and said on "The ledger needs a look".
   // Returns what that should say (with the charges both changed: syncThreeWay's `look`).
-  var SYNC_OPENING_LOCKED_WHY = 'Not kept: the book was reconciled on another device before this change reached it, and a reconciled book’s opening balance is locked. ' +
-    'If the opening was wrong, record the difference as an adjusting entry dated today and say why.';
+  // Final treasurer check of ff0672a (B1) — in the words of the device whose change was not kept: 'here' (this device's
+  // change; the server's book was locked), 'there' (the server's; this book was locked).
+  var SYNC_OPENING_LOCKED_WHY = 'Not kept: the book was reconciled, or had entries ticked against a statement, on another device before this change reached it, ' +
+    'so its opening balance is locked. If the opening was wrong, record the difference as an adjusting entry dated today and say why.';
+  var SYNC_OPENING_LOCKED_WHY_THERE = 'Not kept: this change came from another device after this book was reconciled, or had entries ticked against a statement, here, ' +
+    'so its opening balance is locked. If the opening was wrong, record the difference as an adjusting entry dated today and say why.';
+  function syncOpeningLockedNote(it) {
+    var x = fmt(it.discarded || 0), y = fmt(it.kept || 0);
+    return it.side === 'there'
+      ? 'A change to the opening balance (' + x + ') made on another device wasn’t kept: this book was reconciled first, so its opening balance is locked. It stays ' + y +
+        '. If the opening was wrong, record the difference as an adjusting entry dated today and say why.'
+      : 'Your change to the opening balance (' + x + ') wasn’t kept: the book was reconciled on another device first, so its opening balance is locked. It stays ' + y +
+        '. If the opening was wrong, record the difference as an adjusting entry dated today and say why.';
+  }
   function syncApplyThreeWay(three, picks) {
     var m = three.merged, look = (three.look || []).slice(), wasBook = state.book ? JSON.parse(JSON.stringify(state.book)) : null, wasLedger = state.ledger;
     Object.keys(state).concat(Object.keys(m)).forEach(function (k) {
@@ -19380,19 +19419,40 @@
       var here = state.gone[it.gone][it.goneId], there = three.theirs && three.theirs.gone && three.theirs.gone[it.gone] ? three.theirs.gone[it.gone][it.goneId] : undefined;
       var mark = Math.max(typeof here === 'number' ? Math.abs(here) : 0, typeof there === 'number' ? Math.abs(there) : 0);
       state.gone[it.gone][it.goneId] = -Math.max(now, Math.min(mark, now) + 1);
+      // Final treasurer check of ff0672a (B2) — a parent kept over the server's delete comes back with every record this
+      // device holds for it, not only the ones it changed: each one's mark (the server's delete took them with it) is a
+      // put-back too.
+      if (!it.children) return;
+      var tGone = (three.theirs && three.theirs.gone) || {};
+      function putBack(log, rec) {
+        if (!rec || typeof rec.id !== 'string') return;
+        if (!state.gone[log]) state.gone[log] = {};
+        var h = state.gone[log][rec.id], t = tGone[log] ? tGone[log][rec.id] : undefined;
+        var mk = Math.max(typeof h === 'number' ? Math.abs(h) : 0, typeof t === 'number' ? Math.abs(t) : 0);
+        state.gone[log][rec.id] = -Math.max(now, Math.min(mk, now) + 1);
+      }
+      var pid = it.goneId, dists = arrOf(state.inventory && state.inventory.distributions);
+      if (it.gone === 'scouts') {
+        arrOf(state.entries).forEach(function (e) { if (e && e.scoutId === pid) putBack('entries', e); });
+        arrOf(state.fundraisers).forEach(function (f) { arrOf(f && f.sales).forEach(function (x) { if (x && x.scoutId === pid) putBack('sales', x); }); });
+        dists.forEach(function (x) { if (x && x.target && x.target.kind === 'scout' && x.target.id === pid) putBack('distributions', x); });
+      } else dists.forEach(function (x) { if (x && x.productId === pid) putBack('distributions', x); });
     });
     var bk = state.book, th = three.theirs;
-    [{ book: wasBook, ledger: wasLedger }, { book: th && th.book, ledger: th && th.ledger }].some(function (c) {
+    // (The locked copy is this device's: what was not kept is the server's change, 'there'; or the server's: 'here'.)
+    [{ book: wasBook, ledger: wasLedger, side: 'there' }, { book: th && th.book, ledger: th && th.ledger, side: 'here' }].some(function (c) {
       if (!bk || !c.book || !openingLockedWhy(c.book, c.ledger)) return false;
       if (bk.openingCents === c.book.openingCents && bk.openingDate === c.book.openingDate) return true;
-      var discarded = bk.openingCents;
+      var discarded = bk.openingCents, discardedDate = bk.openingDate;
       bk.openingCents = c.book.openingCents;
       bk.openingDate = c.book.openingDate;
       var f = { openingCents: [discarded, bk.openingCents] };
+      if (discardedDate !== bk.openingDate) f.openingDate = [discardedDate, bk.openingDate];
+      var why = c.side === 'there' ? SYNC_OPENING_LOCKED_WHY_THERE : SYNC_OPENING_LOCKED_WHY;
       // (Once: a push's transaction can run this again.)
-      if (!arrOf(state.ledgerLog).some(function (ev) { return ev && ev.op === 'resolve' && ev.row === 'book' && ev.why === SYNC_OPENING_LOCKED_WHY && ev.f && ev.f.openingCents &&
-        ev.f.openingCents[0] === discarded && ev.f.openingCents[1] === bk.openingCents; })) logLedger('resolve', 'book', { f: f, why: SYNC_OPENING_LOCKED_WHY });
-      look.push({ kind: 'openinglocked', discarded: discarded, kept: bk.openingCents });
+      if (!arrOf(state.ledgerLog).some(function (ev) { return ev && ev.op === 'resolve' && ev.row === 'book' && ev.why === why && ev.f && ev.f.openingCents &&
+        ev.f.openingCents[0] === discarded && ev.f.openingCents[1] === bk.openingCents; })) logLedger('resolve', 'book', { f: f, why: why });
+      look.push({ kind: 'openinglocked', side: c.side, discarded: discarded, kept: bk.openingCents });
       return true;
     });
     return look;
@@ -19412,18 +19472,21 @@
   // redaction, or written by hand); an entry with no real time, or one more than a day ahead, is dropped; the id is
   // deduplicated as kept (40 characters), and the key cut to 200. Treasurer review (6) — baseValue (what it was
   // before either change), kept ('mine' or 'server') and how ('item' or 'all': Keep all).
+  // Final security check of ff0672a (lows) — and never by this device's clock: a slow clock must not drop another
+  // device's decisions. An entry with no real time is dropped; the rest are sorted, and capped by count. The scrub
+  // reaches the item's name and the field too.
   function normalizeSyncLog(list) {
     function str(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
     function val(v) { v = str(v, 200); return v.indexOf('@') === -1 ? v : 'Changed'; }
-    if (!Array.isArray(list) || !list.length) return [];   // (and the clock is asked only when there is a log)
-    var seen = Object.create(null), out = [], ahead = Date.now() + 86400000;
-    (Array.isArray(list) ? list : []).forEach(function (e) {
+    if (!Array.isArray(list) || !list.length) return [];
+    var seen = Object.create(null), out = [];
+    list.forEach(function (e) {
       if (!e || typeof e !== 'object' || Array.isArray(e) || typeof e.id !== 'string' || !e.id) return;
-      var id = str(e.id, 40), at = str(e.at, 40), t = Date.parse(at);
-      if (seen[id] || !/^\d{4}-\d{2}-\d{2}T/.test(at) || !isFinite(t) || t > ahead) return;
+      var id = str(e.id, 40), at = str(e.at, 40);
+      if (seen[id] || !/^\d{4}-\d{2}-\d{2}T/.test(at) || !isFinite(Date.parse(at))) return;
       seen[id] = true;
       out.push({ id: id, at: at, byName: ledgerStampClean(str(e.byName, 80)), byUid: str(e.byUid, 128), key: str(e.key, 200),
-        item: str(e.item, 200), field: str(e.field, 120), serverValue: val(e.serverValue), keptValue: val(e.keptValue), baseValue: val(e.baseValue), mineValue: val(e.mineValue),
+        item: val(e.item), field: val(str(e.field, 120)), serverValue: val(e.serverValue), keptValue: val(e.keptValue), baseValue: val(e.baseValue), mineValue: val(e.mineValue),
         kept: e.kept === 'server' ? 'server' : 'mine', how: e.how === 'all' ? 'all' : 'item',
         serverChangedAt: str(e.serverChangedAt, 40), serverChangedAfter: str(e.serverChangedAfter, 40) });
     });
@@ -19587,9 +19650,13 @@
     if (sl.length) parts.push(sl.length + (sl.length === 1 ? ' fundraiser sale (' : ' fundraiser sales (') + fmt(money(sl, function (x) { return x.cents || 0; })) + ')');
     if (d.length) {
       var cases = money(d, function (x) { return typeof x.containers === 'number' ? x.containers : 0; });
-      parts.push(d.length + (d.length === 1 ? ' hand-out (' : ' hand-outs (') + cases + (cases === 1 ? ' case)' : ' cases)'));
+      parts.push(d.length + (d.length === 1 ? ' hand-out (' : ' hand-outs (') + cases + (cases === 1 ? ' container)' : ' containers)'));
     }
     return 'Not on the server yet: ' + parts.join(', ');
+  }
+  // A hidden field's value (SYNC_LOG_HIDDEN), in words: "Not set", or "Changed" ("Set", before either change).
+  function syncHiddenText(raw, before) {
+    return raw === undefined || raw === null || raw === '' || (Array.isArray(raw) && !raw.length) ? 'Not set' : before ? 'Set' : 'Changed';
   }
   // Treasurer review of 6b48119 (5) — a whole record in words, for a side that is the record (one deleted on the
   // other side), and for what it was before either change: its name and its money. Never a contact detail or an id.
@@ -19597,6 +19664,20 @@
   function syncRecordFigures(list, rec, copies) {
     if (!rec || typeof rec !== 'object') return 'Not there';
     var parts = [syncRecName(list, rec, copies)];
+    // Final treasurer check of ff0672a (B3) — a fundraiser by its sales, a storefront by its shifts' money.
+    if (list === 'fundraisers') {
+      var fs = arrOf(rec.sales);
+      parts.push(fs.length + (fs.length === 1 ? ' sale (' : ' sales (') + fmt(fs.reduce(function (n, x) { return n + ((x && x.cents) || 0); }, 0)) + ')');
+      return syncClip(parts.join(' · '), 160);
+    }
+    if (list === 'storefronts') {
+      var bl = arrOf(rec.blocks), sum = function (f) { return bl.reduce(function (n, b) { return n + f(b || {}); }, 0); };
+      var cashS = sum(function (b) { return arrOf(b.salesCash).reduce(function (n, e) { return n + ((e && e.cents) || 0); }, 0); });
+      parts.push(bl.length + (bl.length === 1 ? ' shift' : ' shifts'), 'sales ' + fmt(sum(function (b) { return b.salesCents || 0; })),
+        'cash donations ' + fmt(sum(function (b) { return b.donationsCents || 0; })));
+      if (cashS) parts.push('cash from sales ' + fmt(cashS));
+      return syncClip(parts.join(' · '), 160);
+    }
     Object.keys(rec).forEach(function (k) { if (/Cents$/.test(k) && typeof rec[k] === 'number') parts.push(syncFieldWords(k) + ' ' + fmt(rec[k])); });
     return syncClip(parts.filter(Boolean).join(' · '), 160);
   }
@@ -19631,6 +19712,11 @@
         return changed.length ? 'Changed: ' + syncClip(changed.map(syncFieldWords).join(', '), 140) : 'Kept as it was';
       }
       function fig(v) { return whole ? (v === undefined ? 'Deleted' : syncRecordFigures(list, v, copies)) : ''; }
+      // Final security check of ff0672a (lows) — a contact detail, an account or a note is never shown, here or before.
+      if (!whole && SYNC_LOG_HIDDEN.indexOf(k) !== -1) {
+        return { label: label, mine: syncHiddenText(f.mine, false), theirs: syncHiddenText(f.theirs, false), key: k, base: syncHiddenText(f.base, true),
+          both: false, mineFig: '', theirsFig: '' };
+      }
       return { label: label, mine: side(f.mine, f.theirs), theirs: side(f.theirs, f.mine), key: k,
         base: whole ? syncRecordFigures(list, f.base, copies) : syncValueText(k, f.base, copies),
         both: typeof f.base === 'number' && typeof f.mine === 'number' && typeof f.theirs === 'number',
@@ -19674,7 +19760,7 @@
   // syncServerWhen; `copies` [mine, theirs, base].
   var SYNC_LOG_HIDDEN = ['email', 'phone', 'uid', 'parentUids', 'noteInternal', 'notes', 'note'];
   var SYNC_LOG_MONEY = { keys: ['depositDays', 'wagonViaTEFrom', 'cashThroughTrailsEnd', 'commissionPct', 'commissionPctOnline', 'cashScoutPct'],
-    lists: ['entries', 'sales', 'distributions', 'salesCash', 'blocks', 'activities', 'expenses', 'tiers', 'products'] };
+    lists: ['entries', 'sales', 'distributions', 'salesCash', 'blocks', 'activities', 'expenses', 'tiers', 'products', 'fundraisers', 'storefronts'] };   // (+ final treasurer check B3)
   function syncItemIsMoney(it, k) {
     if (it.children || it.path[0].k === 'book' || /Cents$/.test(String(k)) || SYNC_LOG_MONEY.keys.indexOf(k) !== -1) return true;
     return it.path.some(function (s, i) { var nx = it.path[i + 1]; return s.k !== undefined && nx && nx.id !== undefined && SYNC_LOG_MONEY.lists.indexOf(s.k) !== -1; });
@@ -33658,6 +33744,9 @@
   var SYNC_THEIRS_HEAD = 'On the pack’s server';
   var SYNC_MINE_SUB = 'Not on the server yet.';
   var SYNC_BEFORE = 'Before either change:';
+  // Final treasurer check of ff0672a (B2) — what keeping a deleted parent does.
+  var SYNC_KEEP_SCOUT = 'Keeping this puts the scout back, with every sale and hand-out this device has for them.';
+  var SYNC_KEEP_PRODUCT = 'Keeping this puts the product back, with every hand-out this device has for it.';
   // Treasurer review of 6b48119 (7) — one set of words in the overlay: the entries' buttons say what the items' do.
   function syncKeepWords(side, picked) {
     return picked ? (side === 'mine' ? '✓ Keeping mine' : '✓ Keeping the server’s') : (side === 'mine' ? 'Keep mine' : 'Keep the server’s');
@@ -33680,7 +33769,8 @@
         (v.lines.some(function (l) { return l.both; }) ? '<p class="small" style="margin:2px 0 0">' + esc(SYNC_BOTH_NUMBER) + '</p>' : '') +
         '<div class="row" style="align-items:flex-start;gap:12px;margin-top:6px">' + ['mine', 'theirs'].map(function (side) {
           var picked = pick === side;
-          var sub = side === 'mine' ? SYNC_MINE_SUB : syncServerWho(it, v, other && other.syncLog, when);
+          var sub = side === 'mine' ? SYNC_MINE_SUB + (it.children ? ' ' + (it.gone === 'scouts' ? SYNC_KEEP_SCOUT : SYNC_KEEP_PRODUCT) : '')
+            : syncServerWho(it, v, other && other.syncLog, when);
           return '<div style="flex:1 1 220px;min-width:0">' +
             '<p class="eyebrow" style="margin:0">' + esc(side === 'mine' ? SYNC_MINE_HEAD : SYNC_THEIRS_HEAD) + '</p>' +
             '<p class="small muted" style="margin:2px 0 4px">' + esc(sub) + '</p>' +
@@ -41156,8 +41246,8 @@
       commit(); return;
     }
     // Wave 14: Inventory
-    if (ch === 'inv-order-total') { state.inventory.orderTotalCents = toCents(el.value); commit(); return; }
-    if (ch === 'inv-comm') { state.inventory.commissionPct = el.value; commit(); return; }
+    if (ch === 'inv-order-total') { logSettingEdit('orderTotalCents', toCents(el.value), state.inventory); commit(); return; }   // (logged: final treasurer check)
+    if (ch === 'inv-comm') { logSettingEdit('commissionPct', el.value, state.inventory, 'invCommissionPct'); commit(); return; }
     if (ch === 'inv-name' || ch === 'inv-percase' || ch === 'inv-cases' || ch === 'inv-loose' || ch === 'inv-price') {
       var invP = invProduct(el.dataset.id);
       if (!invP) return;
