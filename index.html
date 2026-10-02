@@ -20689,7 +20689,8 @@
     ui.armed = null;
     ui.resetScroll = true;
     render();
-    if (w === 'popcorn') loadShiftReports();   // S-3: the storefronts' waiting shift reports
+    // S-3: the storefronts' waiting shift reports; on Home, for its two storefront cards too.
+    if (w === 'popcorn' || w === 'home') loadShiftReports();
   }
   // Which workspaces carry one of this user's jobs. MARKING ONLY — never filters the strip.
   function myWorkspaceIds() {
@@ -21614,17 +21615,24 @@
   // Security review 10 — the family page reads the reports again once a minute while a shift is in
   // the reporting window and the page is showing, so a second parent at the table sees the first
   // one's report without reloading. Nothing scheduled otherwise; leaders reload on the pack feed.
+  // Keith (2026-10-02): and a leader's Home while its family card is up (srHomeFamilyOn: a shift of
+  // theirs in the window), for the same second parent; there only the parent-shaped answer is read.
   function srScheduleRefresh() {
     clearTimeout(sync.srTimer);
     sync.srTimer = null;
-    if (!shiftReportsOn() || !parentMode()) return;
-    var pv = parentDoc(), today = shiftReportToday();
-    var any = arrOf(pv && pv.events).some(function (e) { return e && e.kind === 'storefront' && shiftReportOpenFor(e.date, today); });
-    if (!any) return;
+    if (!shiftReportsOn()) return;
+    var home = !parentMode() && srHomeFamilyOn() && arrOf(sync.srPreview && sync.srPreview.myShifts).length > 0;
+    if (!parentMode() && !home) return;
+    if (!home) {
+      var pv = parentDoc(), today = shiftReportToday();
+      var any = arrOf(pv && pv.events).some(function (e) { return e && e.kind === 'storefront' && shiftReportOpenFor(e.date, today); });
+      if (!any) return;
+    }
     sync.srTimer = setTimeout(function () {
       sync.srTimer = null;
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') srScheduleRefresh();
-      else loadShiftReports();
+      else if (parentMode()) loadShiftReports();
+      else if (srHomeFamilyOn()) loadShiftReports('srPreview');
     }, 60000);
   }
   // Where one shift stands for this person: their own latest report (the one holding the block,
@@ -21685,14 +21693,20 @@
   // preview that is the leader's PARENT-SHAPED answer (GET ?as=parent), kept apart in sync.srPreview,
   // so the preview shows exactly what this account would see as a parent, and nothing leader-only;
   // the leader's own answer (sync.shiftReports) is left as it is for the leaders' side.
-  function srParentStore() { return previewingParent() ? sync.srPreview : sync.shiftReports; }
+  // Keith (2026-10-02): a leader's Home reads the same parent-shaped answer for its "Your family's
+  // shifts" card (srHomeFamilyOn), so that card, too, holds nothing another parent couldn't see.
+  function srParentStore() { return previewingParent() || srHomeFamilyOn() ? sync.srPreview : sync.shiftReports; }
   // The reports, from the server, into sync.shiftReports (or, in the preview, sync.srPreview):
   // { reports, others, myShifts, linked, loaded, error }.
   // Asked for when the parent view arrives or the preview opens, when a family opens the form,
   // and after every write. One at a time; a call while one is out runs once it is back.
-  function loadShiftReports() {
+  // `only` ('srPreview' or 'shiftReports'): that answer alone. Without it, the page's own answer,
+  // and on a leader's Home with a family card to draw, the parent-shaped one beside it (never
+  // instead of it: Home's "Storefronts to close" reads the leader's).
+  function loadShiftReports(only) {
     if (!shiftReportsOn()) return Promise.resolve(null);
-    var key = previewingParent() ? 'srPreview' : 'shiftReports';
+    var key = only === 'srPreview' || only === 'shiftReports' ? only : previewingParent() ? 'srPreview' : 'shiftReports';
+    if (key === 'shiftReports' && only !== 'shiftReports' && srHomeFamilyOn()) loadShiftReports('srPreview');
     var sr = sync[key] || (sync[key] = { reports: [], others: [], myShifts: [], linked: false, loaded: false, loading: false, again: false, error: '' });
     if (sr.loading) { sr.again = true; return Promise.resolve(null); }
     sr.loading = true;
@@ -21713,7 +21727,7 @@
     }).then(function () {
       sr.loading = false;
       if (sync[key] !== sr) return;
-      if (sr.again) { sr.again = false; loadShiftReports(); }
+      if (sr.again) { sr.again = false; loadShiftReports(key); }
       if (key === 'shiftReports') shiftReportsReconcile();   // S-3: finish or undo a leader's accept (leaders who edit only)
       srScheduleRefresh();
       if (!srFormOpen()) render();
@@ -21914,13 +21928,23 @@
   // True as said: the server never lets a leader accept a report they sent (same-person).
   var SR_PREVIEW_LINE = 'This is the card as you’d see it as a parent, with your own scout’s shifts. It isn’t a test: totals you send, change or confirm here ' +
     'are real and go out under your name. Another leader has to accept them.';
+  // Keith (2026-10-02) — the same card on a leader's Home: its heading and first line, in a leader's
+  // words. True as said, like the preview's line: the server never lets a leader accept their own.
+  var SR_HOME_HEAD = 'Your family’s shifts';
+  var SR_HOME_INTRO = 'You worked a storefront shift with your scout. Send the totals for the whole table here, the same as any parent, ' +
+    'or confirm totals another family sent. They go out under your name, and another leader has to accept them.';
   // The Schedule's shift-totals card: the published storefront shifts from the last 14 days that
   // have started, with where their totals stand and the buttons, and the form under the one being
   // filled in. '' when the feature is off or there is no such shift. `today` is the pack's.
   // Keith (2026-10-01): only YOUR FAMILY'S shifts (myShifts), first and marked, and always any shift
   // whose totals you may confirm, your own report's, and the one being filled in; the rest behind
   // the toggle. An account linked to no scout sees every shift, and is told how to fix that.
-  function parentShiftReportCard(pv, today) {
+  // `home` (Keith, 2026-10-02): the card on a leader's Home (homeFamilyShiftsCard), from the same
+  // parent-shaped answer (srParentStore). Only the family's own shifts, one to confirm and their own
+  // report's, and none whose totals are accepted; no toggle, no preview line, no "every shift" for
+  // an account linked to no scout, and nothing at all until the answer is in: '' when there is
+  // nothing for this leader to send, confirm or wait on.
+  function parentShiftReportCard(pv, today, home) {
     if (!shiftReportsOn()) return '';
     var rows = [];
     arrOf(pv && pv.events).forEach(function (e) {
@@ -21937,14 +21961,18 @@
       var info = shiftReportFor(r.e.sfId, r.s.blockId), o = info.otherOf;
       r.keep = r.mine || !!info.mine || on(d, r) || on(cf0, r) ||
         !!(info.other === 'submitted' && o && o.canConfirm && o.needsConfirm && !o.confirmed);
+      // On Home, a shift whose totals are accepted is done: it leaves the card (the form's shift stays).
+      if (home && !on(d, r) && !on(cf0, r) && ((info.mine && info.mine.status === 'accepted') || info.other === 'accepted')) r.keep = false;
     });
     rows = rows.filter(function (r) { return r.mine; }).concat(rows.filter(function (r) { return !r.mine; }));
     var loaded = !!(sr && sr.loaded);
     var linked = loaded && (sr.linked === true || arrOf(sr.myShifts).length > 0);
-    var all = !loaded || !linked || ui.srShowAll === true;
+    var all = !home && (!loaded || !linked || ui.srShowAll === true);
     var shown = all ? rows : rows.filter(function (r) { return r.keep; });
-    var h = '<div class="card no-print sr-card" id="srCard"><h2 class="section display" id="srCardHead" tabindex="-1">Storefront shift totals</h2>' +
-      '<p class="small muted" style="margin:0 0 6px">' + esc(SHIFT_REPORT_INTRO) + '</p>';
+    if (home && (!linked || !shown.length)) return '';
+    var h = '<div class="card no-print sr-card" id="srCard"><h2 class="section display" id="srCardHead" tabindex="-1">' +
+      esc(home ? SR_HOME_HEAD : 'Storefront shift totals') + '</h2>' +
+      '<p class="small muted" style="margin:0 0 6px">' + esc(home ? SR_HOME_INTRO : SHIFT_REPORT_INTRO) + '</p>';
     if (previewingParent()) h += '<p class="small muted" style="margin:0 0 6px"><strong>Preview:</strong> ' + esc(SR_PREVIEW_LINE) + '</p>';
     // role="status", not "alert": the minute's refresh redraws it, and it must not be read out again each time (review 34).
     if (sr && sr.error) h += '<p class="small sr-problem" role="status">' + esc(sr.error) + '</p>';
@@ -21962,7 +21990,7 @@
       h += '</div>';
     });
     // The toggle: only for a linked account with shifts the list leaves out (or showing them now).
-    if (linked && (ui.srShowAll === true || shown.length < rows.length)) {
+    if (!home && linked && (ui.srShowAll === true || shown.length < rows.length)) {
       h += '<div class="sr-acts" style="margin-top:6px"><button type="button" class="btn small ghost" id="srShowAll" data-act="sr-show-all" aria-expanded="' +
         (ui.srShowAll === true ? 'true' : 'false') + '">' + esc(ui.srShowAll === true ? SR_SHOW_MINE : SR_SHOW_ALL) + '</button></div>';
     }
@@ -24177,7 +24205,10 @@
     warnHours: 48,
     family: '(Trail\u2019s End\u2019s own deadline is midnight that day for families; leaders can finish it within 72 hours.)',
     late: 'Trail\u2019s End\u2019s Cash to Credit and closeout window ends soon (72 hours). After that, this cash can only be collected and deposited.',
-    closed: 'Trail\u2019s End\u2019s 72-hour window has closed. This cash can\u2019t be converted now: collect it and deposit it as Popcorn money for the council.'
+    closed: 'Trail\u2019s End\u2019s 72-hour window has closed. This cash can\u2019t be converted now: collect it and deposit it as Popcorn money for the council.',
+    // Keith (2026-10-02): the same two, as a row on Home's "Storefronts to close" says them.
+    lateShort: 'Trail\u2019s End\u2019s 72-hour window ends soon',
+    closedShort: 'Trail\u2019s End\u2019s 72-hour window has closed'
   };
   // Parent-experience review 21: the deadline is the table, as pack policy says. Trail's End's own
   // window is said only in brackets (TE_CASH_WINDOW.family). The family's form leaves it to this
@@ -29981,6 +30012,7 @@
       } else if (d >= -60 && storefrontTotals(sf).combined === 0 && cov.covered > 0) {
         add('kernel', 'now', name + ' — no money entered yet',
           'Ran ' + fmtDate(sf.date) + ' with scouts assigned', 'popcorn', 'storefronts');
+        out[out.length - 1].sfId = sf.id;   // renderHome leaves it out while its totals wait on "Storefronts to close"
       }
     });
     var scoutTotals = computeScoutTotals();
@@ -30201,6 +30233,110 @@
       '</div><span class="mo-chev" aria-hidden="true">›</span></div>';
   }
 
+  /* ----- Home's storefront cards (Keith, 2026-10-02) -----
+     Two cards above Needs you, each '' when there is nothing: "Your family's shifts", the parents'
+     shift-totals card for a leader who worked a table with their own scout, so they need not open
+     the parent preview to send or confirm; and "Storefronts to close", a summary of what the
+     Storefronts banner asks of leaders, each row a way to its storefront. The actions stay where
+     they were: the family card's are the parents' (shiftReportAct, shiftReportSubmit,
+     shiftConfirmSubmit); accepting and collecting stay on the storefront page. */
+  // Is a storefront in the pack record dated in the shift-totals window (today or up to 14 days
+  // back, the pack's day)? The cheap check that keeps Home from building the parent view, or asking
+  // the server for the parent-shaped answer, the rest of the year.
+  function homeShiftsNear() {
+    var today = shiftReportToday();
+    return state.storefronts.some(function (sf) { return !!sf && shiftReportOpenFor(sf.date, today); });
+  }
+  // Does a leader's Home carry "Your family's shifts" now? The leaders' page (never the parent app
+  // or its preview), on Home, shift totals on for this person (shiftReportCanSend: per family, the
+  // same roles a parent's card has, never by job), and a storefront in the window. While it is
+  // true, srParentStore is the parent-shaped answer and loadShiftReports asks for it too.
+  function srHomeFamilyOn() {
+    return ui.tab === 'home' && !parentMode() && shiftReportCanSend() && homeShiftsNear();
+  }
+  // "Your family's shifts": the parent card itself (parentShiftReportCard, `home`), over the
+  // storefront events the preview would publish from the pack record (buildParentView, standings
+  // off: the card reads no names). Built only once the parent-shaped answer says this account is
+  // linked to a scout; a leader linked to none sees nothing here (the preview still lists them all).
+  function homeFamilyShiftsCard() {
+    if (!srHomeFamilyOn()) return '';
+    var sr = sync.srPreview;
+    if (!sr || !sr.loaded || !(sr.linked === true || arrOf(sr.myShifts).length)) return '';
+    var pv = buildParentView(state, { showStandings: false });
+    var evs = arrOf(pv && pv.events).filter(function (e) { return e && e.kind === 'storefront'; });
+    return parentShiftReportCard({ events: evs }, shiftReportToday(), true);
+  }
+  // May Home show "Storefronts to close"? Whoever may accept the families' totals and record the
+  // cash (canReviewReports), on the leaders' page, never the parent preview. The ONE gate for that
+  // card: position-based access (positions-stage1) repoints canReviewReports() to
+  // canDo('shiftVerify'), and this follows it, so no role is compared here. Never by job.
+  function homeStorefrontCashOn() { return canReviewReports() && !parentMode(); }
+  // What the Storefronts banner (renderShiftReportsBanner) asks of leaders, one row per shift, oldest
+  // first: totals waiting to accept (srWaiting), figures needing a second adult's check
+  // (srNeedsCheck), cash from popcorn sales still with a family (srCashToCollect). Pure read:
+  // { rows: [{ sf, b, bits, late }], waiting, check, cash: { cents, n }, sfIds }; `sfIds` holds the
+  // storefronts with totals waiting. A report whose shift is gone is a row with no `sf`.
+  function homeStorefrontsToClose() {
+    var rows = [], byKey = {};
+    var out = { rows: rows, waiting: 0, check: 0, cash: { cents: 0, n: 0 }, sfIds: {} };
+    function row(sf, b) {
+      var k = sf && b ? sf.id + '/' + b.id : '';
+      if (k && byKey[k]) return byKey[k];
+      var r = { sf: sf || null, b: b || null, bits: [], late: '' };
+      rows.push(r);
+      if (k) byKey[k] = r;
+      return r;
+    }
+    srWaiting().forEach(function (rep) {
+      var blk = srBlockOf(rep);
+      out.waiting += 1;
+      if (blk) out.sfIds[blk.sf.id] = true;
+      row(blk && blk.sf, blk && blk.b).bits.push(srMine(rep) ? 'your totals, for another leader to accept'
+        : 'totals from ' + (srNameClean(rep.submittedByName) || 'a family') + ' to accept');
+    });
+    srNeedsCheck().forEach(function (c) {
+      out.check += 1;
+      row(c.sf, c.b).bits.push('figures to check: ' + c.why);
+    });
+    var cash = srCashToCollect();
+    out.cash = { cents: cash.cents, n: cash.n };
+    cash.list.forEach(function (c) {
+      var r = row(c.sf, c.b), age = srCashAge(c.sf.date);
+      r.bits.push(fmt(c.e.cents) + ' cash from popcorn sales to collect');
+      if (age === 'closed' || (age === 'late' && r.late !== 'closed')) r.late = age;
+    });
+    cash.orphans.forEach(function (rep) { row(null, null).bits.push(fmt(rep.salesCashCents) + ' cash from popcorn sales to collect'); });
+    // Oldest first: the cash nearest Trail's End's window, and the longest wait. A gone shift last.
+    rows.sort(function (a, b) {
+      if (!a.sf || !b.sf) return (a.sf ? 0 : 1) - (b.sf ? 0 : 1);
+      return String(a.sf.date || '').localeCompare(String(b.sf.date || '')) || String(a.b.start || '').localeCompare(String(b.b.start || ''));
+    });
+    return out;
+  }
+  // The card: the counts in its heading, then a row per shift with Open, which lands on the
+  // storefront (open-storefront). A gone shift's Open is the storefront list, whose banner lists it.
+  function homeStorefrontsCard(t) {
+    if (!t || !t.rows.length) return '';
+    var say = [];
+    if (t.waiting) say.push(t.waiting + ' shift report' + (t.waiting === 1 ? '' : 's') + ' to accept');
+    if (t.check) say.push(t.check + ' shift' + (t.check === 1 ? '' : 's') + ' to check');
+    if (t.cash.n) say.push(fmt(t.cash.cents) + ' cash from sales to collect');
+    var h = '<div class="card no-print"><h2 class="section display">Storefronts to close <span class="pill">' + t.rows.length + '</span></h2>' +
+      '<p class="small muted" style="margin:0 0 6px">' + esc(say.join(' · ')) + '. Open a storefront to accept, check or collect.</p>';
+    t.rows.forEach(function (r) {
+      var rng = r.b ? (fmtTimeRange(r.b.start, r.b.end) || r.b.label || '') : '';
+      var where = r.sf ? (r.sf.name || 'Storefront') + ', ' + fmtDate(r.sf.date) + (rng ? ', ' + rng : '') : 'A shift no longer on the schedule';
+      h += '<div class="spread sr-banner-row"><p class="small" style="margin:0">' +
+        (r.sf ? '<strong>' + esc(r.sf.name || 'Storefront') + '</strong> · ' + esc(fmtDate(r.sf.date)) + (rng ? ' · ' + esc(rng) : '')
+          : '<strong>A shift no longer on the schedule</strong>') +
+        ' · ' + esc(r.bits.join(' · ')) +
+        (r.late ? ' · <span class="' + (r.late === 'closed' ? 'sr-late-closed' : 'sr-late') + '">' + esc(TE_CASH_WINDOW[r.late === 'closed' ? 'closedShort' : 'lateShort']) + '</span>' : '') + '</p>' +
+        '<button type="button" class="btn small" data-act="open-storefront" data-id="' + esc(r.sf ? r.sf.id : '') + '" aria-label="' +
+          esc('Open ' + where) + '">Open</button></div>';
+    });
+    return h + '</div>';
+  }
+
   function renderHome() {
     var me = leaderForUser();
     var jobIds = myJobs();
@@ -30266,10 +30402,19 @@
         '</div>';
     }
 
+    // Keith (2026-10-02) — the storefront cards, above Needs you: a shift's totals are best sent
+    // at the table, and cash from sales has Trail's End's 72 hours. Each is '' when there is nothing.
+    h += homeFamilyShiftsCard();
+    var toClose = homeStorefrontCashOn() ? homeStorefrontsToClose() : null;
+    if (toClose) h += homeStorefrontsCard(toClose);
+
     /* ----- Needs you ----- */
     // July's yearly check names stale lesson plans, so the plans are asked for (once) in July.
     if (todayISO().slice(5, 7) === '07' && advPlanKeysUsed().length) advPlansWant();
     var tasks = homeTasks();
+    // A storefront whose totals wait on "Storefronts to close" is not also "no money entered yet":
+    // accepting them is how the money gets entered. Without that card (a viewer), the row stays.
+    if (toClose) tasks = tasks.filter(function (t) { return !(t.sfId && toClose.sfIds[t.sfId]); });
     var LIMIT = 5;
     var mine = [], rest = [];
     if (jobIds.length) {

@@ -16145,6 +16145,8 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
+  // Keith (2026-10-02) — Home's family card reads the parent-shaped answer too.
+  'srHomeFamilyOn', 'homeShiftsNear',
   'ledgerActor', 'ledgerActorName',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
@@ -17373,7 +17375,7 @@ function srStatusCtx(o) {
     ${['esc', 'fmt', 'arrOf', 'isoPlusDays', 'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_DAYS', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_NOTE_MAX',
        'SHIFT_REPORT_ATTEST', 'SHIFT_CONFIRM_ATTEST', 'SHIFT_REPORT_TE_HINT', 'SHIFT_REPORT_CASH_HINT', 'SHIFT_REPORT_CASH_POLICY', 'SHIFT_REPORT_INTRO',
        'SHIFT_REPORT_SALES_CASH_HINT', 'srSalesCashFig', 'srIsMyShift', 'SR_MY_SHIFT', 'srParentStore', 'SR_SHOW_ALL', 'SR_SHOW_MINE', 'SR_UNLINKED',
-       'SR_NONE_MINE', 'SR_PREVIEW_LINE',
+       'SR_NONE_MINE', 'SR_PREVIEW_LINE', 'SR_HOME_HEAD', 'SR_HOME_INTRO', 'srHomeFamilyOn',
        'shiftReportNowHM', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'SHIFT_REPORT_NOTE_HINT', 'srField', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
        'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines', 'parentShiftConfirmForm'].map(decl).join('\n')}`, ctx);
   return ctx;
@@ -17719,7 +17721,7 @@ function srLeaderCtx(o) {
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-       'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
+       'srParentStore', 'srHomeFamilyOn', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
@@ -17955,8 +17957,8 @@ test('preview as a parent: the parent preview is the leader’s own parent self 
     /<form data-form="shift-report"/.test(card), 'the preview card: its line, and the form');
   ok(!/You can’t send them from the preview/.test(SCRIPT), 'the old line');
   // It reads the parent-shaped answer, kept apart from the leader's own.
-  ok(/function srParentStore\(\) \{ return previewingParent\(\) \? sync\.srPreview : sync\.shiftReports; \}/.test(SCRIPT) &&
-    /var key = previewingParent\(\) \? 'srPreview' : 'shiftReports';/.test(slice('loadShiftReports')) &&
+  ok(/function srParentStore\(\) \{ return previewingParent\(\) \|\| srHomeFamilyOn\(\) \? sync\.srPreview : sync\.shiftReports; \}/.test(SCRIPT) &&
+    /var key = only === 'srPreview' \|\| only === 'shiftReports' \? only : previewingParent\(\) \? 'srPreview' : 'shiftReports';/.test(slice('loadShiftReports')) &&
     /sync\.backend\.listShiftReports\(sync\.docId, key === 'srPreview'\)/.test(slice('loadShiftReports')) &&
     /if \(key === 'shiftReports'\) shiftReportsReconcile\(\);/.test(slice('loadShiftReports')), 'the preview’s answer');
   ok(/listShiftReports: function \(docId, asParent\) \{ return this\.call\('GET', this\.packPath\(docId, '\/shift-reports'\) \+ \(asParent \? '\?as=parent' : ''\)\); \}/.test(slice('apiBackend')),
@@ -18972,7 +18974,10 @@ test('round 1: a family page reads the reports again each minute while a shift i
       function parentMode() { return ${o.parent !== false}; }
       function parentDoc() { return ${JSON.stringify({ events: o.events || [] })}; }
       function shiftReportToday() { return '2026-10-03'; }
-      function loadShiftReports() { loads += 1; }
+      function srHomeFamilyOn() { return ${!!o.home}; }
+      sync.srPreview = ${JSON.stringify(o.srPreview || null)};
+      var asked = [];
+      function loadShiftReports(only) { loads += 1; asked.push(only || ''); }
       ${['arrOf', 'isoPlusDays', 'SHIFT_REPORT_DAYS', 'shiftReportOpenFor', 'srScheduleRefresh'].map(decl).join('\n')}
       srScheduleRefresh();`, ctx);
     return ctx;
@@ -18988,6 +18993,15 @@ test('round 1: a family page reads the reports again each minute while a shift i
   const h = run({ events: inWin, hidden: true });
   vm.runInContext('timers[0].fn()', h);
   eq([vm.runInContext('loads', h), vm.runInContext('timers.length', h)], [0, 2], 'a hidden page waits for the next minute');
+  // Keith (2026-10-02): a leader's Home with a shift of their family's in the window reads the
+  // parent-shaped answer each minute too (the second parent at the table); no shift of theirs, no timer.
+  const mine = { loaded: true, myShifts: [{ sfId: 'sf1', blockId: 'b1' }] };
+  const hm = run({ parent: false, home: true, srPreview: mine });
+  eq(vm.runInContext('timers.length', hm), 1, 'Home with a family shift: once a minute');
+  vm.runInContext('timers[0].fn()', hm);
+  eq(vm.runInContext('asked', hm), ['srPreview'], 'Home reads the parent-shaped answer only');
+  eq(vm.runInContext('timers.length', run({ parent: false, home: true, srPreview: { loaded: true, myShifts: [] } })), 0, 'Home, none of theirs');
+  eq(vm.runInContext('timers.length', run({ parent: false, home: false, srPreview: mine })), 0, 'not on Home');
   ok(/srScheduleRefresh\(\);\s*if \(!srFormOpen\(\)\) render\(\);/.test(slice('loadShiftReports')), 'each read schedules the next, and redraws only with no form open');
 });
 
@@ -19092,6 +19106,164 @@ test('my shifts: the family’s card lists only their own family’s shifts, mar
     /sr\.linked = !!\(r && r\.linked === true\);/.test(slice('loadShiftReports')), 'loadShiftReports keeps more than the ids and a yes/no');
 });
 
+/* ================================================================
+   Home's storefront cards (Keith, 2026-10-02). "Your family's shifts" is the parents' shift-totals
+   card on a leader's Home, from the parent-shaped answer, for their own family only; "Storefronts
+   to close" sums up the Storefronts banner behind ONE predicate, homeStorefrontCashOn() (which
+   follows canReviewReports(): position-based access repoints that). Each is '' when there is nothing.
+   ================================================================ */
+
+test('Home family shifts: the parent card on Home lists only the leader’s own family’s shifts, and nothing when unlinked or done', () => {
+  const pv = { events: [srEv('2026-09-30', ['b1']), Object.assign(srEv('2026-10-03', ['b5', 'b6']), { sfId: 'sf2', title: 'Publix' }), srEv('2026-10-01', ['b2'])] };
+  const ctx = (o, set) => { const c = srStatusCtx(Object.assign({ role: 'admin' }, o)); if (set) vm.runInContext(set, c); return c; };
+  const home = (c) => vm.runInContext('parentShiftReportCard', c)(pv, SR_TODAY, true);
+  const LINK = "sync.shiftReports.myShifts = [{ sfId: 'sf2', blockId: 'b6' }]; sync.shiftReports.linked = true;";
+  const h = home(ctx({}, LINK));
+  ok(/<h2 class="section display" id="srCardHead" tabindex="-1">Your family’s shifts<\/h2>/.test(h), 'the heading');
+  ok(h.indexOf('You worked a storefront shift with your scout.') !== -1 && h.indexOf('Worked a popcorn table outside a store') === -1, 'a leader’s first line, not the family’s');
+  eq((h.match(/class="sr-row"/g) || []).length, 1, 'only the family’s own shift');
+  ok(/data-block="b6"/.test(h) && !/data-block="b(1|2|5)"/.test(h), 'another family’s shift is listed');
+  ok(!/Preview:/.test(h) && !/sr-show-all/.test(h), 'the preview line or the toggle on Home');
+  eq((home(ctx({ ui: { srShowAll: true } }, LINK)).match(/class="sr-row"/g) || []).length, 1, 'the Schedule’s "show all" reaches Home');
+  // Linked to no scout: nothing (never the "every shift" list). Not loaded yet: nothing.
+  eq(home(ctx({})), '', 'linked to no scout');
+  eq(home(ctx({ loaded: false })), '', 'before the answer is in');
+  // Linked, none of theirs in the window: nothing to show.
+  eq(home(ctx({}, "sync.shiftReports.linked = true; sync.shiftReports.myShifts = [];")), '', 'none of theirs');
+  // Their own shift's totals accepted: done, so off Home (the Schedule card still lists it).
+  const acc = ctx({ reports: [srReport({ sfId: 'sf2', blockId: 'b6', status: 'accepted', reviewedByName: 'Sam' })] }, LINK);
+  eq(home(acc), '', 'an accepted shift stays on Home');
+  ok(/Accepted by Sam/.test(vm.runInContext('parentShiftReportCard', acc)(pv, SR_TODAY)), 'the Schedule card dropped it');
+  eq(home(ctx({ others: [{ sfId: 'sf2', blockId: 'b6', status: 'accepted' }] }, LINK)), '', 'another family’s accepted totals stay on Home');
+  // Waiting on another family's totals: the status only, never their figures.
+  const theirs = home(ctx({ others: [{ sfId: 'sf2', blockId: 'b6', status: 'submitted', needsConfirm: true, confirmed: false }] }, LINK));
+  ok(/Totals sent\. Waiting for a parent from another family/.test(theirs) && !/\$/.test(theirs.replace(/\$10,000/g, '')), 'another family’s figures on Home');
+  // One they may confirm, though not their family's: there, with its button; and the confirm form under it.
+  const cf = { sfId: 'sf1', blockId: 'b2', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: true, id: 'r9', teCents: 4200, cashCents: 0, salesCashCents: 0, updatedAt: 1 };
+  const withCf = home(ctx({ others: [cf] }, LINK));
+  ok(/data-act="shift-report-confirm-open" data-sf="sf1" data-block="b2" data-rid="r9"/.test(withCf), 'a report they may confirm');
+  const cfForm = home(ctx({ others: [cf], ui: { shiftConfirm: { rid: 'r9', sfId: 'sf1', blockId: 'b2', attest: true, busy: false, problem: '' } } }, LINK));
+  ok(/<form data-form="shift-report-confirm" id="srForm"/.test(cfForm) && /id="srConfirmAttest" name="attest" checked/.test(cfForm), 'the confirm form, its box kept');
+  // The send form survives a redraw: drawn from ui.shiftReport, as typed.
+  const f = home(ctx({ ui: { shiftReport: { sfId: 'sf2', blockId: 'b6', rid: '', te: '88.10', cash: '4', note: 'jar', attest: true, busy: false, problem: '' } } }, LINK));
+  ok(/<form data-form="shift-report" id="srForm"/.test(f) && /value="88\.10"/.test(f) && />jar<\/textarea>/.test(f) && /id="srAttest" name="attest" checked/.test(f), 'what was typed');
+  // The Schedule's card is unchanged by the new argument: its heading, its intro, the toggle.
+  const sched = vm.runInContext('parentShiftReportCard', ctx({}, LINK))(pv, SR_TODAY);
+  ok(/>Storefront shift totals<\/h2>/.test(sched) && /Worked a popcorn table outside a store/.test(sched) && /sr-show-all/.test(sched), 'the Schedule card');
+});
+
+test('Home family shifts: Home reads the parent-shaped answer, asks for it beside the leader’s own, and only on Home', () => {
+  // srHomeFamilyOn, over stubs.
+  const on = (o) => {
+    const c = vm.createContext({});
+    vm.runInContext(`
+      var ui = { tab: ${JSON.stringify(o.tab || 'home')} };
+      var state = { storefronts: [{ id: 'sf1', date: ${JSON.stringify(o.date || '2026-10-01')} }] };
+      function parentMode() { return ${!!o.parent}; }
+      function shiftReportCanSend() { return ${o.send !== false}; }
+      function shiftReportToday() { return '2026-10-03'; }
+      ${['isoPlusDays', 'SHIFT_REPORT_DAYS', 'shiftReportOpenFor', 'homeShiftsNear', 'srHomeFamilyOn'].map(decl).join('\n')}`, c);
+    return vm.runInContext('srHomeFamilyOn()', c);
+  };
+  eq([on({}), on({ tab: 'popcorn' }), on({ parent: true }), on({ send: false }), on({ date: '2026-09-01' })], [true, false, false, false, false],
+    'Home, not elsewhere, not the preview, not without shift totals, not without a storefront in the window');
+  ok(!/myJobs|hasJob|JOBS|myRole/.test(codeOnly(slice('srHomeFamilyOn'))), 'the Home card is gated by a job or a role');
+  // srParentStore on Home is the parent-shaped answer.
+  const st = vm.createContext({});
+  vm.runInContext(`var sync = { srPreview: 'P', shiftReports: 'L' }; var home = false, prev = false;
+    function previewingParent() { return prev; } function srHomeFamilyOn() { return home; }
+    ${decl('srParentStore')}`, st);
+  eq(vm.runInContext("[srParentStore(), (home = true, srParentStore()), (home = false, prev = true, srParentStore())]", st), ['L', 'P', 'P'], 'the store');
+  // loadShiftReports: on Home both answers, elsewhere the leader's alone; `only`, that one.
+  const ld = (home, only) => {
+    const c = vm.createContext({});
+    vm.runInContext(`
+      var asked = [];
+      var sync = { session: 1, docId: 'P', backend: { listShiftReports: function (d, asParent) { asked.push(asParent ? 'parent' : 'leader'); return { then: function () { return { then: function () {} }; } }; } } };
+      function shiftReportsOn() { return true; }
+      function previewingParent() { return false; }
+      function srHomeFamilyOn() { return ${home}; }
+      ${decl('loadShiftReports')}
+      loadShiftReports(${only ? JSON.stringify(only) : ''});`, c);
+    return vm.runInContext('asked.slice().sort()', c);
+  };
+  eq([ld(true), ld(false), ld(true, 'srPreview'), ld(true, 'shiftReports')], [['leader', 'parent'], ['leader'], ['parent'], ['leader']], 'what is asked for');
+  // A value a promise hands on is not a key.
+  eq(ld(true, { report: {} }), ['leader', 'parent'], '.then(loadShiftReports) passes a value');
+  ok(/if \(w === 'popcorn' \|\| w === 'home'\) loadShiftReports\(\);/.test(slice('gotoNav')), 'going Home reads the reports');
+  // homeFamilyShiftsCard: nothing until the parent-shaped answer says this account is linked.
+  const card = (sr) => {
+    const c = vm.createContext({});
+    vm.runInContext(`var state = {}; var sync = { srPreview: ${JSON.stringify(sr)} }; var built = 0, got = null;
+      function srHomeFamilyOn() { return true; }
+      function shiftReportToday() { return '2026-10-03'; }
+      function buildParentView(s, o) { built += 1; return { events: [{ kind: 'storefront', sfId: 'sf1' }, { kind: 'meeting' }], standings: o.showStandings }; }
+      function parentShiftReportCard(pv, today, home) { got = { pv: pv, today: today, home: home }; return 'CARD'; }
+      ${decl('arrOf')}
+      ${decl('homeFamilyShiftsCard')}`, c);
+    return [vm.runInContext('homeFamilyShiftsCard()', c), vm.runInContext('built', c), JSON.parse(JSON.stringify(vm.runInContext('got', c)))];
+  };
+  eq(card(null), ['', 0, null], 'no answer yet');
+  eq(card({ loaded: true, linked: false, myShifts: [] }), ['', 0, null], 'linked to no scout');
+  eq(card({ loaded: true, linked: true, myShifts: [] }), ['CARD', 1, { pv: { events: [{ kind: 'storefront', sfId: 'sf1' }] }, today: '2026-10-03', home: true }],
+    'the card, over the storefronts only, as Home draws it');
+  // Placed above Needs you; the family card before the storefronts card.
+  const hm = slice('renderHome');
+  const a = hm.indexOf('h += homeFamilyShiftsCard();'), b = hm.indexOf('if (toClose) h += homeStorefrontsCard(toClose);'), c2 = hm.indexOf('/* ----- Needs you ----- */');
+  ok(a > -1 && b > a && c2 > b, 'the order on Home');
+});
+
+test('Home storefronts to close: one predicate gates the card, which sums up the banner a shift to a row', () => {
+  // The predicate, over stubs: canReviewReports() and never the parent preview. No role compared.
+  const pred = (review, parent) => {
+    const c = vm.createContext({});
+    vm.runInContext(`function canReviewReports() { return ${review}; } function parentMode() { return ${parent}; } ${decl('homeStorefrontCashOn')}`, c);
+    return vm.runInContext('homeStorefrontCashOn()', c);
+  };
+  eq([pred(true, false), pred(false, false), pred(true, true)], [true, false, false], 'reviewer, not a reviewer, the parent preview');
+  ok(/function homeStorefrontCashOn\(\) \{ return canReviewReports\(\) && !parentMode\(\); \}/.test(SCRIPT), 'the predicate');
+  for (const f of ['homeStorefrontCashOn', 'homeStorefrontsToClose', 'homeStorefrontsCard', 'homeFamilyShiftsCard', 'srHomeFamilyOn', 'renderHome'])
+    ok(!/sync\.myRole|myJobs\(\)[\s\S]{0,40}(canReview|canEdit)/.test(codeOnly(slice(f))), f + ' compares a role');
+  const hm = slice('renderHome');
+  ok(/var toClose = homeStorefrontCashOn\(\) \? homeStorefrontsToClose\(\) : null;\s*if \(toClose\) h \+= homeStorefrontsCard\(toClose\);/.test(hm), 'the card is behind the predicate');
+  eq((hm.match(/homeStorefrontsCard\(/g) || []).length, 1, 'the card drawn twice');
+  // The card, over a leader's page: a report waiting, a figure to check, and cash still out.
+  const st = { scouts: [{ id: 's1', name: 'Ada Example' }], leaders: [],
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-09-28', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 500, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: '' },
+      { id: 'b2', label: 'Block 2', start: '12:00', end: '14:00', assignments: [], salesCents: 900, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: 'Lee',
+        salesCash: [{ reportId: 'rep-2', cents: 2000, from: 'Nora', outcome: null }] }] },
+      { id: 'sf2', name: 'Publix', date: '2026-10-01', blocks: [
+        { id: 'b5', label: 'Block 1', start: '09:00', end: '11:00', assignments: [], salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' }] }] };
+  const L = srLeaderCtx({ state: st, today: '2026-10-01', reports: [srRep({ id: 'rep-5', sfId: 'sf2', blockId: 'b5' })] });
+  vm.runInContext(['homeStorefrontsToClose', 'homeStorefrontsCard'].map(decl).join('\n'), L.ctx);
+  const t = L.run('homeStorefrontsToClose()');
+  eq([t.waiting, t.check, t.cash.cents, t.cash.n, Object.keys(t.sfIds)], [1, 1, 2000, 1, ['sf2']], 'the counts');
+  const h = L.run('homeStorefrontsCard(homeStorefrontsToClose())');
+  ok(/<h2 class="section display">Storefronts to close <span class="pill">3<\/span><\/h2>/.test(h), 'the heading, with the count of shifts');
+  ok(/1 shift report to accept · 1 shift to check · \$20\.00 cash from sales to collect\. Open a storefront to accept, check or collect\./.test(h), 'what is waiting, in a line');
+  eq((h.match(/class="spread sr-banner-row"/g) || []).length, 3, 'a row per shift');
+  ok(h.indexOf('10:00–12:00') < h.indexOf('12:00–14:00') && h.indexOf('12:00–14:00') < h.indexOf('09:00–11:00'), 'oldest first');
+  ok(/<strong>Kroger<\/strong> · D2026-09-28 · 10:00–12:00 · figures to check: nobody named as verifying the cash<\/p>/.test(h), 'the check row');
+  ok(/12:00–14:00 · \$20\.00 cash from popcorn sales to collect · <span class="sr-late-closed">Trail’s End’s 72-hour window has closed<\/span>/.test(h), 'the cash row, and Trail’s End’s window');
+  ok(/09:00–11:00 · totals from Nora Newfamily to accept<\/p>/.test(h), 'the waiting row');
+  ok(/data-act="open-storefront" data-id="sf2" aria-label="Open Publix, D2026-10-01, 09:00–11:00">Open</.test(h), 'each row opens its storefront');
+  // Actions stay on the storefront page: no accept, collect or send-back here.
+  ok(!/data-act="sr-(accept|cash|return|override)/.test(h), 'an action on Home');
+  // A report of this leader's own: said, since another leader accepts it.
+  const mine = srLeaderCtx({ state: st, today: '2026-10-01', reports: [srRep({ id: 'rep-5', sfId: 'sf2', blockId: 'b5', submittedByUid: 'uid-ed' })] });
+  vm.runInContext(['homeStorefrontsToClose', 'homeStorefrontsCard'].map(decl).join('\n'), mine.ctx);
+  ok(/09:00–11:00 · your totals, for another leader to accept/.test(mine.run('homeStorefrontsCard(homeStorefrontsToClose())')), 'their own report');
+  // Nothing waiting, nothing to check, no cash out: no card.
+  const none = srLeaderCtx({ state: { scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'K', date: '2026-09-28', blocks: [
+    { id: 'b1', label: 'B', start: '10:00', end: '12:00', assignments: [], salesCents: 500, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: 'Lee' }] }] }, today: '2026-10-01', reports: [] });
+  vm.runInContext(['homeStorefrontsToClose', 'homeStorefrontsCard'].map(decl).join('\n'), none.ctx);
+  eq(none.run('homeStorefrontsCard(homeStorefrontsToClose())'), '', 'nothing pending: no card');
+  // The kernel's "no money entered yet" row steps aside for a storefront whose totals wait here.
+  ok(/out\[out\.length - 1\]\.sfId = sf\.id;/.test(slice('homeTasks')) &&
+    /if \(toClose\) tasks = tasks\.filter\(function \(t\) \{ return !\(t\.sfId && toClose\.sfIds\[t\.sfId\]\); \}\);/.test(hm), 'the same storefront said twice');
+});
+
 atest('same family: the leader’s card hides the accept from a leader in the sender’s family, says why, and the override says so on the block', async () => {
   const st = { scouts: [{ id: 's1', name: 'Ada', familyId: 'fam1', parentUids: ['uid-nora'] }, { id: 's2', name: 'Bo', familyId: 'fam1', parentUids: ['uid-ed'] }],
     leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
@@ -19140,7 +19312,8 @@ test('72 hours: one constant holds Trail’s End’s window, counted from the st
   eq(W, { hours: 72, warnHours: 48,
     family: '(Trail’s End’s own deadline is midnight that day for families; leaders can finish it within 72 hours.)',
     late: 'Trail’s End’s Cash to Credit and closeout window ends soon (72 hours). After that, this cash can only be collected and deposited.',
-    closed: 'Trail’s End’s 72-hour window has closed. This cash can’t be converted now: collect it and deposit it as Popcorn money for the council.' }, 'the one constant');
+    closed: 'Trail’s End’s 72-hour window has closed. This cash can’t be converted now: collect it and deposit it as Popcorn money for the council.',
+    lateShort: 'Trail’s End’s 72-hour window ends soon', closedShort: 'Trail’s End’s 72-hour window has closed' }, 'the one constant');
   eq(L.run(`srCashAgeLine('2026-10-03', ${start + 50 * 3600000})`), '<p class="small sr-late" style="margin:0 0 6px">' + W.late + '</p>', 'amber says it ends soon');
   eq(L.run(`srCashAgeLine('2026-10-03', ${start + 80 * 3600000})`), '<p class="small sr-late-closed" style="margin:0 0 6px">' + W.closed + '</p>', 'red says it closed');
   eq(L.run(`srCashAgeLine('2026-10-03', ${start})`), '', 'not yet');
