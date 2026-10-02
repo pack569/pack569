@@ -8392,6 +8392,7 @@
     if (ap) out.approvedBy = ap;
     return out;
   }
+  var COUNCIL_APPROVER_HINT = 'Type the Chair\u2019s name. The Chair should approve before you record this.';
   // The approving Chair's name as stored: one line, at most 80 characters, never an email. Pure.
   function councilApproverClean(v) {
     return ledgerStampClean(String(typeof v === 'string' ? v : '').replace(/\s+/g, ' ').trim().slice(0, 80));
@@ -8413,14 +8414,26 @@
     if (!top) return h;
     if (top.op === 'unsettle') return null;
     var said = top.f && Array.isArray(top.f.councilSettled) ? top.f.councilSettled[1] : null;
-    var match = [t, h].filter(function (s) { return s && councilSettledText(s) === said; });
+    // A line from before the approver was in it (treasurer's review of 045e7ac, 1) still matches.
+    var match = [t, h].filter(function (s) { return s && (councilSettledText(s) === said || councilSettledText(s, true) === said); });
     if (match.length) return match[0];
     var any = [h, t].filter(Boolean).sort(function (a, b) { return a.at < b.at ? 1 : a.at > b.at ? -1 : 0; });
     return any[0] || null;
   }
-  // The settlement as the change history says it ("2026-12-02 · the pack paid the council"), or ''. Pure.
-  function councilSettledText(s) {
-    return s && COUNCIL_SETTLE_LABELS[s.how] ? s.on + ' \u00b7 ' + COUNCIL_SETTLE_LABELS[s.how] : '';
+  // The settlement as the change history says it ("2026-12-02 · the pack paid the council · approved by
+  // Jordan Lee"), or ''. The treasurer's review of 045e7ac (1): the approving Chair is in the line, so a
+  // settlement made again under another name is in the history too. `noName`: the line as it was
+  // written before that, which the merge still matches (councilSettledMerged). Pure.
+  function councilSettledText(s, noName) {
+    if (!s || !COUNCIL_SETTLE_LABELS[s.how]) return '';
+    var t = s.on + ' \u00b7 ' + COUNCIL_SETTLE_LABELS[s.how];
+    return !noName && s.approvedBy ? t + ' \u00b7 approved by ' + s.approvedBy : t;
+  }
+  // Did the leader who recorded the settlement name themselves as the approving Chair? Then the card
+  // says so, so it doesn't read as a second person's approval (the treasurer's review, 2). Pure.
+  function councilSettledBySelf(s) {
+    var a = String((s && s.approvedBy) || '').trim().toLowerCase(), b = String((s && s.by) || '').trim().toLowerCase();
+    return !!a && a === b;
   }
   // The popcorn money held for the council, from the counted rows: { banked (A, money in), paid (B,
   // money out), held (A − B, signed), checks (C, commission checks posted), commission (A − B + C) }.
@@ -8464,7 +8477,9 @@
     }
     if (settled) {
       out.push({ warn: false, text: 'Settled with the council on ' + fmtDateShort(settled.on) + ': ' + (COUNCIL_SETTLE_LABELS[settled.how] || '') + '. ' +
-        (settled.approvedBy ? 'Approved by ' + settled.approvedBy + ', Committee Chair. ' : '') +
+        // A settlement from a page before the Chair was asked for names nobody (the treasurer's review, 1).
+        (settled.approvedBy ? 'Approved by ' + settled.approvedBy + ', Committee Chair' + (councilSettledBySelf(settled) ? ' (recorded by the Chair)' : '') + '. '
+          : 'Approved by: not recorded. ') +
         'The commission is actual now: ' + fmt(chk.banked) + ' banked \u2212 ' + fmt(chk.paid) + ' paid' +
         (chk.checks ? ' + ' + fmt(chk.checks) + ' in commission checks' : '') + ' = ' + fmt(chk.commission) + ', and that is what Funds in counts.' });
       if (estimate != null && estimate !== chk.commission) out.push({ warn: true, text: councilEstimateText(estimate, chk.commission) });
@@ -29159,7 +29174,9 @@
       '<label class="fld">How<select data-ch="settle-how">' + COUNCIL_SETTLE_HOW.map(function (k) {
         return '<option value="' + k + '"' + (d.how === k ? ' selected' : '') + '>' + esc(COUNCIL_SETTLE_LABELS[k].charAt(0).toUpperCase() + COUNCIL_SETTLE_LABELS[k].slice(1)) + '</option>';
       }).join('') + '</select></label>' +
-      '<label class="fld">Approved by (Committee Chair)<input type="text" data-ch="settle-approved" maxlength="80" autocomplete="off" value="' + esc(d.approvedBy || '') + '"></label></div>' +
+      '<label class="fld">Approved by (Committee Chair)<input type="text" data-ch="settle-approved" maxlength="80" autocomplete="off" aria-describedby="settle-approved-hint" value="' +
+        esc(d.approvedBy || '') + '"></label></div>' +
+      '<p class="small muted" id="settle-approved-hint" style="margin:4px 0 0">' + esc(COUNCIL_APPROVER_HINT) + '</p>' +
       '<p class="small" style="margin:6px 0 0">Funds in will count the commission as actual: ' + esc(fmt(chk.banked)) + ' banked for the council \u2212 ' +
         esc(fmt(chk.paid)) + ' paid to it + ' + esc(fmt(chk.checks)) + ' in commission checks = <strong class="money">' + esc(fmt(chk.commission)) + '</strong>' +
         (est != null ? ' (sales work out to ' + esc(fmt(est)) + ')' : '') + '.</p>' +
@@ -39233,7 +39250,7 @@
         approvedBy: councilApproverClean(sd.approvedBy) };
       logLedger('settle', 'book', { f: { councilSettled: [sdWas || null, councilSettledText(state.book.councilSettled)] } });
       ui.settleDraft = null;
-      showToast('Settled. Funds in now counts the commission as actual: the money held for the council.');
+      showToast('Settled, approved by ' + state.book.councilSettled.approvedBy + '. Funds in now counts the commission as actual: the money held for the council.');
       commit(); return;
     }
     if (act === 'council-unsettle') {

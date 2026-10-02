@@ -17117,8 +17117,10 @@ test('positions: a kernel\'s deposit keeps its review flag through the page; a s
   eq([J(x.councilSettledNormal(Object.assign({}, S, { approvedBy: '  Jordan   Lee ' }))).approvedBy, 'approvedBy' in J(x.councilSettledNormal(S)),
     J(x.councilSettledNormal(Object.assign({}, S, { approvedBy: 'chair@example.com' }))).approvedBy, 'approvedBy' in J(x.councilSettledNormal(Object.assign({}, S, { approvedBy: 7 })))],
     ['Jordan Lee', false, 'a signed-in leader', false], 'approvedBy: one line, never an email, absent when there is none');
-  ok(/'Approved by ' \+ settled\.approvedBy \+ ', Committee Chair\. '/.test(slice('councilMoneyLines')), 'the Reconcile card names the Chair');
-  ok(/data-ch="settle-approved"/.test(slice('councilMoneyHtml')), 'the form asks for the Chair');
+  ok(/'Approved by ' \+ settled\.approvedBy \+ ', Committee Chair'/.test(slice('councilMoneyLines')), 'the Reconcile card names the Chair');
+  ok(/data-ch="settle-approved"/.test(slice('councilMoneyHtml')) && /esc\(COUNCIL_APPROVER_HINT\)/.test(slice('councilMoneyHtml')), 'the form asks for the Chair, with the hint');
+  eq(vm.runInContext('COUNCIL_APPROVER_HINT', sandbox(['COUNCIL_APPROVER_HINT'])), 'Type the Chair’s name. The Chair should approve before you record this.', 'the hint\'s words');
+  ok(/showToast\('Settled, approved by ' \+ state\.book\.councilSettled\.approvedBy \+ '\. Funds in now counts/.test(SCRIPT), 'the toast names the Chair');
 });
 
 /* ================================================================
@@ -34193,7 +34195,7 @@ test('item 11: DESIGN-money.md has the posting rule, and the format was raised f
    the council and the pack's check to it. A pass-through, and a settlement step that makes the commission
    actual. Made-up data throughout.
    ================================================================ */
-const KC_FNS = declClosure(['councilKeptTwiceText', 'councilEstimateText', 'ledgerIncomeCents', 'lineActualCents', 'lineIncomeCents', 'entryWantsLine', 'ledgerBalance', 'reconcileTotals', 'commissionLookalikes',
+const KC_FNS = declClosure(['councilSettledBySelf', 'councilKeptTwiceText', 'councilEstimateText', 'ledgerIncomeCents', 'lineActualCents', 'lineIncomeCents', 'entryWantsLine', 'ledgerBalance', 'reconcileTotals', 'commissionLookalikes',
   'councilMoneyCheck', 'councilMoneyLines', 'councilSettledNormal', 'councilApproverClean', 'councilSettledText', 'councilSettlement'], []);
 const kcRow = (id, cents, dir, o) => c8row(id, (o && o.date) || '2026-11-20', cents, dir, Object.assign({ source: 'council' }, o || {}));
 
@@ -34264,7 +34266,7 @@ test('council money: settling makes the commission actual, banked − paid + com
   eq(x.councilMoneyLines(x.councilMoneyCheck(paid), null, 30000).map((l) => l.text), ['Popcorn money for the council: banked $700.00 · paid to the council $400.00 · still held $300.00.'], 'not settled');
   eq(x.councilMoneyLines(x.councilMoneyCheck(paid), st, 31000).map((l) => (l.warn ? '! ' : '') + l.text), [
     'Popcorn money for the council: banked $700.00 · paid to the council $400.00 · still held $300.00.',
-    'Settled with the council on ' + fds + ': the pack paid the council. The commission is actual now: $700.00 banked − $400.00 paid = $300.00, and that is what Funds in counts.',
+    'Settled with the council on ' + fds + ': the pack paid the council. Approved by: not recorded. The commission is actual now: $700.00 banked − $400.00 paid = $300.00, and that is what Funds in counts.',
     '! Sales work out to $310.00 in commission, $10.00 more than settled. Usually that is Show & Sell product the pack paid for and didn’t sell, or sales cash not yet banked as Popcorn money for the council. Check the council’s statement.'], 'settled');
   // Treasurer re-check of 89c08b5 (1, 2) — the estimate lower, and kept storefront cash not banked as such while council money is.
   eq(x.councilMoneyLines(x.councilMoneyCheck(paid), st, 29000, 20000).slice(2).map((l) => (l.warn ? '! ' : '') + l.text), [
@@ -34272,6 +34274,10 @@ test('council money: settling makes the commission actual, banked − paid + com
     '! Storefront cash donations kept $200.00 aren’t banked as ‘Storefront cash donations (kept)’. If they went into a Popcorn money for the council deposit, settling counts them twice in Funds in: once as kept cash and again in the commission. Record that deposit as two rows, one for each source.'],
     'the cross-checks');
   eq(x.councilMoneyLines(x.councilMoneyCheck([]), null, null, 20000), [], 'nothing banked for the council: no question');
+  // The treasurer's review of 045e7ac (1, 2): the approving Chair, and a Chair recording their own approval.
+  const line2 = (o) => x.councilMoneyLines(x.councilMoneyCheck(paid), Object.assign({}, st, o), null)[1].text;
+  ok(line2({ approvedBy: 'Jordan Lee' }).indexOf('the pack paid the council. Approved by Jordan Lee, Committee Chair. The commission') !== -1, 'the Chair named');
+  ok(line2({ approvedBy: 'Jordan Lee', by: 'jordan lee' }).indexOf('Approved by Jordan Lee, Committee Chair (recorded by the Chair). ') !== -1, 'the Chair recorded it');
   const cmh = slice('councilMoneyHtml');
   ok(/var est = computePackTotals\(\)\.commission;/.test(cmh) && /state\.cashThroughTrailsEnd \? 0 : storefrontCashCheck\(/.test(cmh) &&
     /var warn = keptZ > 0 && chk\.banked > 0 \? councilKeptTwiceText\(keptZ\)/.test(cmh) && /' \(sales work out to ' \+ esc\(fmt\(est\)\) \+ '\)'/.test(cmh), 'the Reconcile card and the settle form');
@@ -34363,6 +34369,12 @@ test('council settlement merge: the newest settle or unsettle event decides, eit
   const again = un.concat([ev('s2', 'settle', '2026-12-05T10:00:00.000Z', S2)]);
   eq(both(S, S2, settled, again), [S2, S2], 'settled again differently: the newest');
   eq(both(S, undefined, [], []), [S, null], 'no event: each device keeps its own, as before');
+  // The treasurer's review of 045e7ac (1): the approver is in the line, and a line written before that still matches.
+  const S3 = Object.assign({}, S, { approvedBy: 'Jordan Lee' });
+  eq([x.councilSettledText(S3), x.councilSettledText(S3, true), x.councilSettledText(S)],
+    ['2026-12-02 · the pack paid the council · approved by Jordan Lee', '2026-12-02 · the pack paid the council', '2026-12-02 · the pack paid the council'], 'the line');
+  const oldEv = { id: 'lg-o', at: '2026-12-06T10:00:00.000Z', op: 'settle', row: 'book', f: { councilSettled: [null, x.councilSettledText(S3, true)] } };
+  eq(both(S2, S3, [], [oldEv]), [S3, S3], 'an old line, with no name, still picks its settlement');
   eq(J(x.councilSettledNormal(Object.assign({}, S, { at: 'x'.repeat(41), byUid: 'u'.repeat(129) }))), Object.assign({}, S, { at: '', byUid: '' }), 'security re-check (3): at and byUid');
   // In the merge: after the lock, same year, neither closed.
   const m = slice('mergeRemoteAppendOnly');
