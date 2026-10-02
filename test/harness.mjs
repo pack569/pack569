@@ -23334,7 +23334,7 @@ test('C4 (option B): Entries shows both rows with their pills and the reason; th
     function reconcileLockRefusal() { return ''; } function reconcileLockAhead() { return false; } var RECONCILE_AHEAD_WHY = '';
     function canReopenStatement() { return false; }
     function storefrontCashHint() { return ''; } function ledgerDraftEntry() { return {}; } function storefrontCashCheckHtml() { return ''; }   // item 11: its own tests
-    function outSourceSelectHtml() { return ''; } function councilMoneyHtml() { return ''; } var LEDGER_NO_FAMILY_SOURCES = ['storefront', 'council'], COUNCIL_ROW_NOTE = '';
+    function outSourceSelectHtml() { return ''; } function councilMoneyHtml() { return ''; } function wagonCutoverOf() { return ''; } function computePackTotals() { return { wagonKeptDon: 0 }; } var LEDGER_NO_FAMILY_SOURCES = ['storefront', 'council'], COUNCIL_ROW_NOTE = '';
     function todayISO() { return '2026-10-15'; }`, x);
   // Entries: each row's pill, and the reason under the reversed entry only.
   const h = x.renderLedgerEntries();
@@ -28689,7 +28689,7 @@ test('C8-3: the Reconcile screen lists the carried rows under their own heading,
     function reconcileLockRefusal() { return ''; } function reconcileLockAhead() { return false; } var RECONCILE_AHEAD_WHY = '';
     function canReopenStatement() { return false; }
     function storefrontCashHint() { return ''; } function ledgerDraftEntry() { return {}; } function storefrontCashCheckHtml() { return ''; }   // item 11: its own tests
-    function outSourceSelectHtml() { return ''; } function councilMoneyHtml() { return ''; } var LEDGER_NO_FAMILY_SOURCES = ['storefront', 'council'], COUNCIL_ROW_NOTE = '';
+    function outSourceSelectHtml() { return ''; } function councilMoneyHtml() { return ''; } function wagonCutoverOf() { return ''; } function computePackTotals() { return { wagonKeptDon: 0 }; } var LEDGER_NO_FAMILY_SOURCES = ['storefront', 'council'], COUNCIL_ROW_NOTE = '';
     function todayISO() { return '2027-09-15'; }`, x);
   const text = (h) => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   const rc = x.renderReconcile(), t = text(rc);
@@ -32010,7 +32010,7 @@ function wagonPack(viaTE) {
   const ctx = sandbox(declClosure(['computePackTotals', 'storefrontCashCheck'], ['activeScouts', 'packGoalCents', 'state']));
   vm.runInContext(`var state = { cashThroughTrailsEnd: ${viaTE}, commissionPct: '30', commissionPctOnline: '', cashScoutPct: '', stretchGoalCents: 0, cashGoalCents: 0,
       storefronts: [{ id: 'k', name: 'Kroger', date: '2026-09-12', blocks: [{ salesCents: 90000, donationsCents: 20000 }] }],
-      entries: [{ kind: 'wagon', scoutId: 's1', salesCents: 30000, donationsCents: 5000 }, { kind: 'online', scoutId: 's1', salesCents: 10000, donationsCents: 1000 }] };
+      entries: [{ kind: 'wagon', scoutId: 's1', date: '2026-10-05', salesCents: 30000, donationsCents: 5000 }, { kind: 'online', scoutId: 's1', salesCents: 10000, donationsCents: 1000 }] };
     function activeScouts() { return [{ id: 's1' }]; } function packGoalCents() { return 0; }`, ctx);
   return ctx;
 }
@@ -32153,8 +32153,8 @@ test('item 11: plain income that looks like storefront cash gets the gentle hint
     'Is this wagon cash? Wagon cash goes through Trail’s End, so it is the council’s money, not pack income: record it as ‘Popcorn money for the council’.'], 'the council hints');
   // Where it is shown: under the add form (asked of the draft) and in an entry's Detail; never a change, and redrawn only on change.
   const f = slice('renderLedgerEntries');
-  ok(/var hk = storefrontCashHint\(ledgerDraftEntry\(dr\), state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\);[\s\S]{0,200}esc\(storefrontHintText\(hk\)\)/.test(f), 'the add form');
-  ok(/var hk = e\.reconciled \? '' : storefrontCashHint\(e, state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd\);[\s\S]{0,200}esc\(storefrontHintText\(hk\)\)[\s\S]{0,120}data-act="not-storefront:/.test(f), 'an entry’s Detail: unreconciled only, with its answer');
+  ok(/var hk = storefrontCashHint\(ledgerDraftEntry\(dr\), state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, wagonCutoverOf\(state\.wagonViaTEFrom\)\);[\s\S]{0,200}esc\(storefrontHintText\(hk, wagonCutoverOf\(state\.wagonViaTEFrom\)\)\)/.test(f), 'the add form');
+  ok(/var hk = e\.reconciled \? '' : storefrontCashHint\(e, state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, wagonCutoverOf\(state\.wagonViaTEFrom\)\);[\s\S]{0,200}esc\(storefrontHintText\(hk, wagonCutoverOf\(state\.wagonViaTEFrom\)\)\)[\s\S]{0,120}data-act="not-storefront:/.test(f), 'an entry’s Detail: unreconciled only, with its answer');
   const ns = /if \(act\.indexOf\('not-storefront:'\) === 0\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/state\.book\.closedAt/.test(ns) && /logLedger\('edit', nsE\.id, \{ f: \{ notStorefront: \[null, true\] \} \}\)/.test(ns) && /nsE\.notStorefront = true;/.test(ns), 'Not storefront cash');
   ok(/\(nk === 'desc' \|\| nk === 'amount'\) && !liveEdit &&\s*storefrontCashHint\(ledgerDraftEntry\(nd\)[^\n]*!== ndHint\) render\(\);/.test(SCRIPT), 'the draft redraws it mid-typing, or never');
@@ -32503,17 +32503,18 @@ function cutoverPack(cutover, viaTE) {
     function activeScouts() { return [{ id: 's1' }]; } function packGoalCents() { return 0; }`, ctx);
   return ctx;
 }
-test('wagon cutover: wagon cash dated before it is kept as it was, on or after it (or undated) goes through Trail’s End', () => {
+test('wagon cutover: wagon cash dated before it (or undated) is kept as it was, on or after it goes through Trail’s End', () => {
   const tot = (co, te) => J(vm.runInContext('computePackTotals()', cutoverPack(co, te)));
   const dflt = tot(undefined), blank = tot(''), early = tot('2026-07-01'), te = tot(undefined, true);
-  eq([dflt.wagonCutover, dflt.wagonKeptDon, dflt.cashKept, dflt.retainedCash], ['2026-10-01', 5000, 25000, 25000], 'the default: the Sep 20 wagon cash is kept');
-  eq([blank.wagonKeptDon, blank.cashKept, early.wagonKeptDon, early.cashKept], [0, 20000, 0, 20000], 'blank, or the season start: every wagon entry through Trail’s End');
+  // Final treasurer check (B1) — an undated wagon entry predates the cutover: kept.
+  eq([dflt.wagonCutover, dflt.wagonKeptDon, dflt.cashKept, dflt.retainedCash], ['2026-10-01', 5300, 25300, 25300], 'the default: the Sep 20 and the undated wagon cash are kept');
+  eq([blank.wagonKeptDon, blank.cashKept, early.wagonKeptDon, early.cashKept], [0, 20000, 300, 20300], 'blank: every wagon entry through Trail’s End; the season start: all but the undated one');
   eq([te.wagonKeptDon, te.cashKept], [0, 0], 'everything through Trail’s End');
   eq([dflt.teEligible + dflt.cashKept, blank.teEligible + blank.cashKept], [dflt.combined, blank.combined], 'still every dollar once');
   // The Reconcile line's kept is still retainedCash, and says the wagon part.
   const ctx = cutoverPack(undefined);
   const chk = J(vm.runInContext('storefrontCashCheck(state.storefronts, [], false, "", computePackTotals().wagonKeptDon)', ctx));
-  eq([chk.kept, chk.keptStorefront, chk.keptWagon], [dflt.retainedCash, 20000, 5000], 'kept is not computePackTotals().retainedCash');
+  eq([chk.kept, chk.keptStorefront, chk.keptWagon], [dflt.retainedCash, 20000, 5300], 'kept is not computePackTotals().retainedCash');
   eq(vm.runInContext('storefrontCashLines(storefrontCashCheck(state.storefronts, [], false, "", 5000))[0].text', ctx),
     'Popcorn cash donations kept $250.00 (storefronts $200.00, wagon $50.00) · banked $0.00 · still to bank $250.00.', 'the treasurer’s wording with wagon cash');
   // A scout: the kept wagon cash is in keptCashOf, and out of the goal base.
@@ -32529,10 +32530,21 @@ test('wagon cutover: wagon cash dated before it is kept as it was, on or after i
   const nw = (v) => { const d = { version: 1, scouts: [] }; if (v !== undefined) d.wagonViaTEFrom = v; const r = nz.normalizeState(d); return 'wagonViaTEFrom' in r ? r.wagonViaTEFrom : '(absent)'; };
   eq([nw(undefined), nw(''), nw('2026-07-01'), nw('July')], ['(absent)', '', '2026-07-01', '(absent)'], 'normalizeState');
   const ss = slice('seasonSetupCard');
-  ok(/Wagon cash donations go through Trail’s End from' \+\s*'<input type="date" data-ch="wagon-via-te-from" value="' \+ esc\(packT\.wagonCutover\) \+ '">/.test(ss) && /esc\(WAGON_CUTOVER_NOTE\)/.test(ss), 'the setting');
+  ok(/Wagon cash donations go through Trail’s End from' \+\s*'<input type="date" data-ch="wagon-via-te-from" value="' \+ esc\(packT\.wagonCutover\) \+ '"'/.test(ss) && /esc\(WAGON_CUTOVER_NOTE\)/.test(ss), 'the setting');
   eq(vm.runInContext('WAGON_CUTOVER_NOTE', sandbox(['WAGON_CUTOVER_NOTE'])), 'If this season’s earlier wagon donations were entered in the Trail’s End app, move this to the season’s start.', 'the note');
   ok(/if \(ch === 'wagon-via-te-from'\) \{[\s\S]{0,500}logLedger\('edit', 'book', \{ f: \{ wagonViaTEFrom: \[wcWas, wcNow\] \} \}\)/.test(SCRIPT), 'the change is not logged');
   ok(!/wagonViaTEFrom|wagonKept/.test(codeOnly(BPV())), 'the parent view reads it');
+  ok(/data-ch="wagon-via-te-from" value="' \+ esc\(packT\.wagonCutover\) \+ '"' \+ \(canEdit\(\) \? '' : ' disabled'\)/.test(ss), 'a viewer can change the date');
+  // B2 — the hint asks about wagon cash the pack kept as kept cash; F2 — the money-in help says to bank it so.
+  const hx = sandbox(declClosure(['storefrontCashHint', 'storefrontHintText'], []));
+  const hw = (o, te, co) => hx.storefrontCashHint(Object.assign({ direction: 'in', amountCents: 500, source: '', description: 'Wagon cash, Oak St' }, o), [], [], !!te, co);
+  eq([hw({ date: '2026-09-20' }, false, '2026-10-01'), hw({ date: '' }, false, '2026-10-01'), hw({ date: '2026-10-05' }, false, '2026-10-01'),
+    hw({ date: '2026-09-20' }, true, '2026-10-01'), hw({ date: '2026-09-20' }, false, '')], ['keptWagon', 'keptWagon', 'wagon', 'wagon', 'wagon'], 'kept wagon cash');
+  eq(hx.storefrontHintText('keptWagon', '2026-10-01'), 'Is this wagon cash donations the pack kept (before ' + vm.runInContext('fmtDateShort', hx)('2026-10-01') +
+    ')? Record them as ‘Storefront cash donations (kept)’: they are already in Funds in.', 'the words');
+  ok(/storefrontCashHint\(ledgerDraftEntry\(dr\), state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, wagonCutoverOf\(state\.wagonViaTEFrom\)\)/.test(SCRIPT) &&
+    /\(hk === 'wagon' \|\| hk === 'keptWagon'\) \? 'Not wagon cash'/.test(SCRIPT), 'the form and Detail pass the cutover');
+  ok(/computePackTotals\(\)\.wagonKeptDon > 0\s*\? ' Wagon cash donations dated before ' \+ esc\(fmtDate\(wagonCutoverOf\(state\.wagonViaTEFrom\)\)\) \+ ' were kept by the pack: bank them as ' \+\s*'<strong>Storefront cash donations \(kept\)<\/strong> too\.'/.test(SCRIPT), 'the money-in help');
 });
 
 test('wagon cutover: a new wagon entry has no Donations field, and the import warns about wagon donations typed by hand', () => {
@@ -32543,7 +32555,8 @@ test('wagon cutover: a new wagon entry has no Donations field, and the import wa
   const matched = [{ scoutId: 'a', name: 'Ada', wagonCents: 5000 }, { scoutId: 'b', name: 'Ben', wagonCents: 5000 }, { scoutId: 'c', name: 'Cal', wagonCents: 0 }];
   const entries = [{ scoutId: 'a', kind: 'wagon', date: '2026-10-05', donationsCents: 500 }, { scoutId: 'b', kind: 'wagon', date: '2026-09-05', donationsCents: 500 },
     { scoutId: 'c', kind: 'wagon', date: '2026-10-05', donationsCents: 500 }, { scoutId: 'b', kind: 'wagon', date: '2026-10-05', donationsCents: 900, source: 'te-import' }];
-  eq(x.teWagonDonationOverlap(matched, entries, '2026-10-01'), ['Ada'], 'typed, after the cutover, and the import brings wagon sales');
+  // Final treasurer check (F3) — any date.
+  eq(x.teWagonDonationOverlap(matched, entries, '2026-10-01'), ['Ada', 'Ben'], 'typed by hand, and the import brings wagon sales');
   ok(/has wagon donations typed here; the Trail’s End wagon total may already include them as Heroes &amp; Helpers\./.test(SCRIPT), 'the warning');
 });
 

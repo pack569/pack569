@@ -8302,14 +8302,21 @@
   function hintWords(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); }
   var COUNCIL_TE_HINT = 'Is this storefront cash? Storefront cash donations run through Trail\u2019s End this season, so it is the council\u2019s money, not pack income: record it as \u2018Popcorn money for the council\u2019.';
   var COUNCIL_WAGON_HINT = 'Is this wagon cash? Wagon cash goes through Trail\u2019s End, so it is the council\u2019s money, not pack income: record it as \u2018Popcorn money for the council\u2019.';
-  // The words for a hint kind (storefrontCashHint). Pure.
-  function storefrontHintText(kind) {
+  // The words for a hint kind (storefrontCashHint); `cutover` (wagonCutoverOf) for 'keptWagon'. Pure.
+  function storefrontHintText(kind, cutover) {
+    if (kind === 'keptWagon') {
+      return 'Is this wagon cash donations the pack kept (before ' + fmtDateShort(cutover) + ')? Record them as \u2018Storefront cash donations (kept)\u2019: they are already in Funds in.';
+    }
     return kind === 'kept' ? STOREFRONT_CASH_HINT : kind === 'te' ? COUNCIL_TE_HINT : kind === 'wagon' ? COUNCIL_WAGON_HINT : '';
   }
-  function storefrontCashHint(e, storefronts, ledger, viaTE) {
+  // `cutover` (final treasurer check) — the wagon cutover: wagon cash the pack kept (undated, or dated
+  // before it, while cash is kept) is 'keptWagon', the kept-cash question about wagon cash, not 'wagon'.
+  function storefrontCashHint(e, storefronts, ledger, viaTE, cutover) {
     if (!e || e.direction !== 'in' || e.scoutId || e.tierMakeup || e.notStorefront === true) return '';
     if (STOREFRONT_HINT_SOURCES.indexOf(e.source || '') === -1) return '';
-    if (/\bwagons?\b/.test(String(e.description || '').toLowerCase())) return 'wagon';
+    if (/\bwagons?\b/.test(String(e.description || '').toLowerCase())) {
+      return !viaTE && cutover && (!e.date || String(e.date) < cutover) ? 'keptWagon' : 'wagon';
+    }
     var amt = e.amountCents || 0, d = String(e.date || ''), text = String(e.description || '').toLowerCase(), squashed = hintWords(text);
     function recent(sf) {
       if (!sf.date || !d) return true;
@@ -24242,11 +24249,13 @@
     return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : WAGON_VIA_TE_DEFAULT;
   }
   // Is wagon (non-online) entry `e` cash the pack KEPT? Only one dated before the cutover (`cutover`:
-  // wagonCutoverOf), and only while the pack keeps cash (`viaTE` off): that is how the app counted wagon
-  // cash before the owner's decision of 2026-10-01. On or after it, or undated, it went through Trail's
-  // End. Pure.
+  // wagonCutoverOf), or undated, and only while the pack keeps cash (`viaTE` off): that is how the app
+  // counted wagon cash before the owner's decision of 2026-10-01. On or after it, it went through
+  // Trail's End. Pure.
   function wagonEntryKept(e, viaTE, cutover) {
-    return !viaTE && !!e && e.kind !== 'online' && !!cutover && !!e.date && String(e.date) < cutover;
+    // Final treasurer check — an UNDATED wagon entry predates the cutover too (new ones are saved with no
+    // donations, so only old entries are affected): kept.
+    return !viaTE && !!e && e.kind !== 'online' && !!cutover && (!e.date || String(e.date) < cutover);
   }
   // Owner, 2026-10-01 — said wherever the storefront-cash setting is.
   var WAGON_CASH_NOTE = 'Wagon cash donations always go through Trail’s End: families enter them in the Trail’s End app as Heroes &amp; Helpers, so the pack never keeps wagon cash.';
@@ -25311,7 +25320,7 @@
       '</div>' +
       // Treasurer re-check of 89c08b5 (5) — when wagon cash started going through Trail's End.
       '<div class="row" style="margin-top:6px"><label class="fld">Wagon cash donations go through Trail’s End from' +
-      '<input type="date" data-ch="wagon-via-te-from" value="' + esc(packT.wagonCutover) + '"></label></div>' +
+      '<input type="date" data-ch="wagon-via-te-from" value="' + esc(packT.wagonCutover) + '"' + (canEdit() ? '' : ' disabled') + '></label></div>' +
       '<p class="small muted" style="margin:4px 0 0">' + esc(WAGON_CUTOVER_NOTE) + ' Leave it blank and every wagon entry goes through Trail’s End.' +
       // …and what moving it would do to the tiers, before anyone moves it.
       (packT.wagonCutover && packT.wagonCutover > programYearStartISO(state.budget.programYear)
@@ -27004,8 +27013,8 @@
       (addWarn ? '<p class="small" role="alert" style="margin:8px 0 0;color:var(--accent-text)">' + esc(addWarn) + '</p>' : '') +
       // Item 11 — plain income that looks like popcorn cash: asked, never changed.
       (function () {
-        var hk = storefrontCashHint(ledgerDraftEntry(dr), state.storefronts, state.ledger, state.cashThroughTrailsEnd);
-        return hk ? '<p class="small" role="status" style="margin:8px 0 0"><span class="pill navy">Check</span> ' + esc(storefrontHintText(hk)) + '</p>' : '';
+        var hk = storefrontCashHint(ledgerDraftEntry(dr), state.storefronts, state.ledger, state.cashThroughTrailsEnd, wagonCutoverOf(state.wagonViaTEFrom));
+        return hk ? '<p class="small" role="status" style="margin:8px 0 0"><span class="pill navy">Check</span> ' + esc(storefrontHintText(hk, wagonCutoverOf(state.wagonViaTEFrom))) + '</p>' : '';
       })() +
       '<p class="small muted" style="margin:8px 0 0">Pick the budget line it belongs to and this entry becomes part of that line’s actual cost. ' +
       'Leave it blank if it doesn’t belong to one — you can set it later.' +
@@ -27016,7 +27025,12 @@
           // Owner, 2026-10-01 — the council's popcorn money, and the mixed cash box (treasurer review, 9).
           'Sales cash, and any cash donations that go through Trail’s End, belong to the council: bank them as ' +
           '<strong>Popcorn money for the council</strong>, with no budget line. A cash box with both is one line on the bank statement ' +
-          'but two entries here, with the same date and the same deposit-slip number in Ref, one for each; tick both against the statement.'
+          'but two entries here, with the same date and the same deposit-slip number in Ref, one for each; tick both against the statement.' +
+          // Final treasurer check (F2) — wagon cash the pack kept before the cutover.
+          (computePackTotals().wagonKeptDon > 0
+            ? ' Wagon cash donations dated before ' + esc(fmtDate(wagonCutoverOf(state.wagonViaTEFrom))) + ' were kept by the pack: bank them as ' +
+              '<strong>Storefront cash donations (kept)</strong> too.'
+            : '')
         : ' The check to the council for popcorn is <strong>Popcorn money for the council</strong>, with no budget line: it is not a pack cost.') + '</p></div>';
 
     // ---- filters + list ----
@@ -27130,9 +27144,9 @@
                   // Treasurer review of item 11 (13) — only while not reconciled, and answerable "no" (notStorefront, as notCommission).
                   (e.source === 'council' ? COUNCIL_ROW_NOTE : '') +
                   (function () {
-                    var hk = e.reconciled ? '' : storefrontCashHint(e, state.storefronts, state.ledger, state.cashThroughTrailsEnd);
-                    return hk ? '<p class="small" style="margin:6px 0 0;flex-basis:100%"><span class="pill navy">Check</span> ' + esc(storefrontHintText(hk)) +
-                      ' <button type="button" class="btn small ghost" data-act="not-storefront:' + esc(e.id) + '">' + (hk === 'wagon' ? 'Not wagon cash' : 'Not storefront cash') + '</button></p>' : '';
+                    var hk = e.reconciled ? '' : storefrontCashHint(e, state.storefronts, state.ledger, state.cashThroughTrailsEnd, wagonCutoverOf(state.wagonViaTEFrom));
+                    return hk ? '<p class="small" style="margin:6px 0 0;flex-basis:100%"><span class="pill navy">Check</span> ' + esc(storefrontHintText(hk, wagonCutoverOf(state.wagonViaTEFrom))) +
+                      ' <button type="button" class="btn small ghost" data-act="not-storefront:' + esc(e.id) + '">' + ((hk === 'wagon' || hk === 'keptWagon') ? 'Not wagon cash' : 'Not storefront cash') + '</button></p>' : '';
                   })()
                 // Owner, 2026-10-01 — money out with no family can be the check to the council.
                 : (!e.scoutId ? outSourceSelectHtml('led', e.id, e.source) + (e.source === 'council' ? COUNCIL_ROW_NOTE : '') : '') +
@@ -34579,12 +34593,13 @@
   // is credited twice. The preview names them; deciding which to keep is a person's call.
   // Pure: takes the matched rows and the entries.
   // Treasurer re-check of 89c08b5 (4a) — the matched scouts with wagon cash donations TYPED here (not
-  // imported), dated on or after the cutover (`cutover`: wagonCutoverOf) or undated: the Trail's End
-  // wagon total the import brings may already include them as Heroes & Helpers. Names. Pure.
+  // imported), of any date (final check, F3; `cutover` is no longer read): the Trail's End wagon total
+  // the import brings may already include them as Heroes & Helpers. Names. Pure.
   function teWagonDonationOverlap(matched, entries, cutover) {
     var typed = {};
     (entries || []).forEach(function (e) {
-      if (e && e.source !== 'te-import' && e.kind === 'wagon' && (e.donationsCents || 0) > 0 && !(cutover && e.date && String(e.date) < cutover)) typed[e.scoutId] = true;
+      // Final treasurer check (F3) — any date: a typed donation may be in Trail's End's wagon total whenever it was.
+      if (e && e.source !== 'te-import' && e.kind === 'wagon' && (e.donationsCents || 0) > 0) typed[e.scoutId] = true;
     });
     return matched.filter(function (r) { return typed[r.scoutId] && (r.wagonCents || 0) > 0; }).map(function (r) { return r.name; });
   }
@@ -39244,7 +39259,7 @@
       if (nk === 'depto') { nd.depositTo = el.value; return; }
       // Item 11 — the storefront-cash hint follows the description and amount: redrawn on change
       // (never mid-typing: liveEdit) only when it comes or goes.
-      var ndHint = storefrontCashHint(ledgerDraftEntry(nd), state.storefronts, state.ledger, state.cashThroughTrailsEnd);
+      var ndHint = storefrontCashHint(ledgerDraftEntry(nd), state.storefronts, state.ledger, state.cashThroughTrailsEnd, wagonCutoverOf(state.wagonViaTEFrom));
       // M1(c) — on money out, the line decides whether the family picker is a refund or a
       // reimbursement, so it re-renders like the two selects above.
       if (nk === 'line' && nd.direction !== 'in') { nd.lineId = el.value; render(); return; }
@@ -39257,7 +39272,7 @@
       else if (nk === 'ref') nd.ref = el.value;
       else if (nk === 'donor') nd.donor = el.value;
       if ((nk === 'desc' || nk === 'amount') && !liveEdit &&
-        storefrontCashHint(ledgerDraftEntry(nd), state.storefronts, state.ledger, state.cashThroughTrailsEnd) !== ndHint) render();
+        storefrontCashHint(ledgerDraftEntry(nd), state.storefronts, state.ledger, state.cashThroughTrailsEnd, wagonCutoverOf(state.wagonViaTEFrom)) !== ndHint) render();
       return;
     }
     if (ch.indexOf('led-') === 0) {

@@ -1295,8 +1295,9 @@ Helpers, so **the pack never keeps wagon cash**. The setting `cashThroughTrailsE
 - **The cutover** (treasurer re-check of 89c08b5, 5; Keith was not sure the season's earlier wagon
   donations went through the app). `state.wagonViaTEFrom`, default 2026-10-01: a wagon entry dated
   before it stays kept, as the app counted it then (`wagonEntryKept`: in `cashKept`/`retainedCash`,
-  `wagonKeptDon`, a scout's `wagonKeptD` and so `keptCashOf` and the cash credit); on or after it,
-  or undated, it goes through Trail's End. A blank date sends every wagon entry through Trail's
+  `wagonKeptDon`, a scout's `wagonKeptD` and so `keptCashOf` and the cash credit), and so does an
+  undated one (final treasurer check, B1: it predates the cutover; new wagon entries carry no
+  donations); on or after it, it goes through Trail's End. A blank date sends every wagon entry through Trail's
   End. Leaders edit it on the season setup card ("Wagon cash donations go through Trail's End
   from ‹date›", with "If this season's earlier wagon donations were entered in the Trail's End app,
   move this to the season's start."), and a change is logged on the book (`f.wagonViaTEFrom`).
@@ -1304,11 +1305,15 @@ Helpers, so **the pack never keeps wagon cash**. The setting `cashThroughTrailsE
   would change if it were moved there (`wagonCutoverTierChanges`, read as the leaders' screens read
   tiers). With wagon cash kept, the Reconcile line uses the treasurer's first wording: "Popcorn cash
   donations kept $X (storefronts $A, wagon $B) · banked $Y · still to bank $Z", and X is still
-  `retainedCash`. The deposit source keeps its storefront name; a deposit of kept wagon cash uses it.
+  `retainedCash`. The deposit source keeps its storefront name; a deposit of kept wagon cash uses it, and the money-in
+  help says so while any is kept: "Wagon cash donations dated before ‹cutover› were kept by the pack:
+  bank them as Storefront cash donations (kept) too." The hint asks about such a deposit as kept cash
+  ("Is this wagon cash donations the pack kept (before ‹cutover›)? Record them as ‘Storefront cash
+  donations (kept)’: they are already in Funds in."), not as the council's (B2).
 - **No double count on new wagon entries** (4). A new wagon entry has no Donations field: its amount
   is "Trail's End amount (Heroes & Helpers included)". Existing entries keep what they hold, and it
-  counts. The Trail's End import warns for each matched scout with wagon donations typed by hand on
-  or after the cutover: "‹name› has wagon donations typed here; the Trail's End wagon total may
+  counts. The Trail's End import warns for each matched scout with wagon donations typed by hand,
+  whatever their date (F3): "‹name› has wagon donations typed here; the Trail's End wagon total may
   already include them as Heroes & Helpers." (`teWagonDonationOverlap`).
 
 #### Which tier the pack plans on — `planOnTierId`
@@ -1749,7 +1754,7 @@ sentence adds "net of any Show & Sell product the pack paid for and didn't sell"
   commission before it, and the Reconcile line shows the difference.
 - *Heroes & Helpers cash.* Wagon cash (and storefront cash while it runs through Trail's End) is
   banked as council money, so it is in A. That is right only if the council's invoice includes it
-  (so it is in B as well). If it does not, A − B + C overstates the commission by it.
+  (so it is in B as well). If it does not, the total is still what the pack kept; that part is just labelled commission rather than kept cash.
 - *Where the settlement lives.* On `state.book`: it is the year's, and close-out starts a new book
   without it (the year's Funds in is read before). The rest of a book is this device's in a merge,
   so the settlement is merged on its own (security re-check of 89c08b5, 1): between two books of the
