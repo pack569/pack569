@@ -8634,7 +8634,7 @@ test('nothing is published to parents before the join config has said whether st
     var built = 0;
     function buildParentView() { built += 1; return { events: [] }; }
     function accountsInForce() { return true; }
-    function canEdit() { return true; }
+    function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function fixedSyncBlocked() { return false; }
     function clearTimeout() {}
     var parentViewTimer = null, parentViewFingerprint = null;
@@ -8658,7 +8658,7 @@ test('only a device holding the pack record, after its first answer, publishes t
     const ctx = vm.createContext({});
     vm.runInContext(FAKE_BE + `
       function buildParentView() { return { events: [] }; }
-      function accountsInForce() { return true; } function canEdit() { return true; }
+      function accountsInForce() { return true; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function fixedSyncBlocked() { return false; } function clearTimeout() {}
       function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
       var parentViewTimer = null, parentViewFingerprint = null, state = {};
@@ -8838,7 +8838,7 @@ test('Firestore: an editor’s copy waiting on a choice is dropped for "view-onl
       membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, membersHeard: false, members: [],
       feed: 'doc', unsub: null, parentUnsub: null, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null,
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
-    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
+    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'ACCESS_TABLE', 'ACCESS_LEVELS', 'apiAccounts', 'accessFor', 'actionsFor', 'accessMemo', 'myAccess', 'sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'SECTION_SAY', 'readOnlySay', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
        'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', ...C8_SYNC_FNS, 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     subscribeDoc(1);
@@ -8889,7 +8889,7 @@ test('Firestore: the server confirming a cached roster is heard, and a viewer’
       membersUnsub: null, membersScope: null, membersDeniedAs: null, membersFromServer: false, membersHeard: false, members: [],
       feed: 'doc', unsub: null, parentUnsub: null, mode: 'connecting', notice: '', firstSnap: true, remoteRec: null,
       conflict: null, dirty: false, clobber: false, pushTimer: null, packMissing: false };
-    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'feedForRole', 'recomputeMyRole',
+    ${['LEADER_ROLES', 'cloudReady', 'packLinked', 'accountsInForce', 'canEdit', 'ACCESS_TABLE', 'ACCESS_LEVELS', 'apiAccounts', 'accessFor', 'actionsFor', 'accessMemo', 'myAccess', 'sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'SECTION_SAY', 'readOnlySay', 'feedForRole', 'recomputeMyRole',
        'stopLocalWrites', 'stopDocFeed', 'subscribeDoc', 'applyRoleSubscription', 'applyMembersSubscription', 'isStateEmpty',
        'stateFingerprint', 'mergeRemoteAppendOnly', 'seasonMoved', ...C8_SYNC_FNS, 'freshGone', ...GONE_FNS, 'adoptRemote', 'onRemoteSnap', 'takeSharedAsViewer', 'syncPush', ...FORMAT_GATE_FNS].map(decl).join('\n')}
     subscribeDoc(1);
@@ -9034,7 +9034,7 @@ test('a push reads, merges and writes in one retried step, and the rev always cl
           REMOTES.forEach(function (rm) { out = build(rm); records.push(out.record); });
           return now(out.result);
         } };
-      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 1; }
       var chargeSyncs = 0; function syncCharges() { chargeSyncs += 1; }
       function ledgerRowConflicts() { return []; }   // Phase 3, C6: the merge is stubbed, and so is its pre-check
@@ -9078,7 +9078,7 @@ test('Firestore: a save before the pack record’s first answer never writes ove
   const run = (o) => {
     const ctx = fsAdapterCtx(`
       var toasts = [], timers = [], saves = 0;
-      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() {} function renderSyncPill() {}
       function save() { saves += 1; } function showToast(m) { toasts.push(m); } function syncFail(e) { throw e; }
       function clearTimeout() {} function setTimeout(fn, ms) { timers.push(ms); return 't'; }
@@ -9116,7 +9116,7 @@ function fsFeedCtx(local, extra) {
   return fsAdapterCtx(`
     var toasts = [], timers = {}, timerSeq = 0, saves = 0, renders = 0;
     function fixedSyncBlocked() { return false; } function fixedFeedBlocked() { return false; }
-    function accountsInForce() { return false; } function canEdit() { return true; }
+    function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function holdPushes() { return false; } function scheduleParentViewRefresh() {} function render() { renders += 1; }
     function renderSyncPill() {} function save() { saves += 1; } function showToast(m) { toasts.push(m); }
     function syncFail(e) { throw e; }
@@ -9352,7 +9352,7 @@ test('the pack record feed ignores its own echoes and keeps the raw record for t
     var timers = [], adopted = [], rendered = 0;
     function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() { rendered += 1; }
     function syncPush() {} function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
-    function canEdit() { return true; } function save() {}
+    function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function save() {}
     function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
     function adoptRemote(d, o) { adopted.push([d, !!(o && o.toast)]); return true; }
     var ui = { tab: 'home', overlay: null };
@@ -9390,7 +9390,7 @@ test('once single-pack mode halts, nothing can push the pack record, even with t
     var fakeBe = { pushPack: function () { pushed += 1; return { then: function () { return { catch: function () {} }; } }; } };
     function stopDocFeed() {} function stopParentFeed() {} function renderSyncPill() {} function render() {}
     function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
-    function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+    function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     var state = { rev: 1 };
     var sync = { backend: fakeBe, pack: { docId: 'P' }, session: 1, deviceId: 'd', mode: 'online' };
     ${['packLinked', 'haltFixedSync', 'scheduleSyncPush', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf'].map(slice).join('\n')}
@@ -9416,7 +9416,7 @@ test('every guard in front of the pack feed, the parent feed and a push holds on
       var parentViewTimer = null, state = { rev: 1 };
       var feedBlocked = ${!!over.feedBlocked}, syncBlocked = ${!!over.syncBlocked}, inForce = ${!!over.inForce}, edit = ${over.edit !== false};
       function fixedFeedBlocked() { return feedBlocked; } function fixedSyncBlocked() { return syncBlocked; }
-      function accountsInForce() { return inForce; } function canEdit() { return edit; }
+      function accountsInForce() { return inForce; } function canEdit() { return edit; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       var sync = { backend: fakeBe, pack: { docId: 'P' }, docId: 'P', session: 1, deviceId: 'd', mode: 'online', parentUnsub: null };
       ${['cloudReady', 'packLinked', 'haltFixedSync', 'subscribeDoc', 'subscribeParentView', 'syncPush', 'seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf'].map(slice).join('\n')}
       ${FORMAT_GATE_SRC()}`, c);
@@ -11827,7 +11827,7 @@ test('A1: the planner is a Program section, writes only through a tagged den mee
   ok(prog.sections.some((s) => s.id === 'denplan'), 'no Den plans section in Program');
   ok(/sec === 'denplan'\) v\.innerHTML = renderDenPlanner\(\)/.test(SCRIPT), 'the section is not dispatched');
   const h = /if \(kind === 'plan-adv'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/if \(!canEdit\(\)\)/.test(h), 'a viewer can add a meeting from the planner');
+  ok(/if \(!canEditSection\('calendar'\)\)/.test(h), 'a viewer (or a den leader, who edits den plans, not the calendar) can add a meeting from the planner');
   ok(/freshEvent\(\{ kind: 'den', den: paDen, date: paDate[\s\S]*adventure: paName \}\)/.test(h), 'the meeting is not pre-tagged');
   ok(/advCanonicalName\(paDen, fd\.get\('name'\)\)/.test(h), 'the typed elective is not canonicalised');
   // Buttons that edit are offered only to editors — a job never decides it.
@@ -16216,9 +16216,67 @@ test('positions: no access decision reads JOBS or myJobs (a leader edits their o
   const files = readdirSync(join(ROOT, 'functions'), { recursive: true }).filter((f) => /\.js$/.test(f));
   for (const f of files) ok(!/\bJOBS\b|myJobs|hasJob/.test(codeOnly(readFileSync(join(ROOT, 'functions', f), 'utf8'))), f + ' reads a job');
   // And no page function that will read the table (sectionAccess and friends, once they exist) reads one.
-  for (const n of ['sectionAccess', 'canEditSection', 'canSeeSection', 'effectiveAccess']) {
-    if (new RegExp(`^  function ${n}\\(`, 'm').test(SCRIPT)) ok(!/\bJOBS\b|myJobs|hasJob/.test(codeOnly(slice(n))), n + ' reads a job');
+  const helpers = ['sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'accessFor', 'actionsFor', 'myAccess', 'readOnlySay'];
+  for (const n of helpers) {
+    ok(new RegExp(`^  function ${n}\\(`, 'm').test(SCRIPT), n + ' is missing');
+    ok(!/\bJOBS\b|myJobs|hasJob|leaderForUser|\.jobs\b/.test(codeOnly(slice(n))), n + ' reads a job');
   }
+});
+
+// Client step 2 (2026-10-02) — the page's access helpers decide as the server does: accessFor and
+// actionsFor are access.js's effectiveAccess and effectiveActions on the page's copy of the table.
+atest('positions: the page\'s sectionAccess, canEditSection, canSeeSection and canDo agree with the server, per role, backend and position', async () => {
+  await apiSetup();
+  const x = sandbox(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor']);
+  const J = (v) => JSON.parse(JSON.stringify(v));
+  const A = API.access;
+  const cases = [['admin', []], ['editor', []], ['viewer', []], ['parent', ['parent']], ['pending', []], ['none', []], ['leader', []], ['leader', ['bogus']]]
+    .concat(POSITION_IDS.map((p) => ['leader', [p]]))
+    .concat([['leader', ['denleader', 'treasurer']], ['leader', ['kernel', 'secretary', 'comms']], ['leader', ['activities', 'advancement']], ['leader', ['parent', 'trainer']]]);
+  for (const [role, held] of cases) {
+    eq(J(x.accessFor(role, held)), J(A.effectiveAccess(role, held)), 'access: ' + role + ' ' + held.join('+'));
+    eq(J(x.actionsFor(role, held)), J(A.effectiveActions(role, held)), 'actions: ' + role + ' ' + held.join('+'));
+  }
+  // myAccess: what it decides from.
+  const c = vm.createContext({});
+  vm.runInContext(`var sync = { user: null, accountsUnavailable: false, myRole: null, myPositions: [], backend: null };`, c);
+  vm.runInContext(['ACCESS_TABLE', 'ACCESS_LEVELS', 'arrOf', 'accessFor', 'actionsFor', 'accountsInForce', 'apiAccounts', 'accessMemo', 'myAccess', 'sectionAccess',
+    'canEditSection', 'canSeeSection', 'canDo', 'canEdit', 'SECTION_SAY', 'readOnlySay'].map(decl).join('\n'), c);
+  const run = (js) => vm.runInContext(js, c);
+  const as = (o) => run(`sync.user = ${o.user === false ? 'null' : '{ uid: "u1" }'}; sync.myRole = ${JSON.stringify(o.role || null)};
+    sync.myPositions = ${JSON.stringify(o.positions || [])}; sync.backend = ${o.api ? '{ startSession: function () {} }' : '{}'};`);
+  const look = () => JSON.parse(run(`JSON.stringify([canEdit(), canEditSection('ledger'), canSeeSection('ledger'), canEditSection('calendar.denmeeting'),
+    sectionAccess('a-camping-trip-id'), canDo('shiftVerify'), canDo('shiftUndo')])`));
+  as({ user: false });
+  eq(look(), [true, true, true, true, 'edit', true, true], 'nobody signed in: everything, as always');
+  as({ role: 'editor' });
+  eq(look(), [true, true, true, true, 'read', true, true], 'Firestore editor: everything but the admin-only, and reviews shifts as before');
+  as({ role: 'viewer' });
+  eq(look(), [false, false, true, false, 'read', false, false], 'Firestore viewer: reads');
+  as({ role: 'parent' });
+  eq(look(), [false, false, false, false, 'hidden', false, false], 'Firestore parent: none of it');
+  as({ role: 'editor', api: true });
+  eq(look(), [false, false, true, false, 'read', false, false], 'the pack\'s server: a retired editor reads, edits nothing');
+  as({ role: 'leader', api: true, positions: ['denleader'] });
+  eq(look(), [true, false, false, true, 'read', true, false], 'a Den Leader: den meetings yes, the ledger hidden, verifies shifts');
+  as({ role: 'leader', api: true, positions: ['treasurer'] });
+  eq(look(), [true, true, true, false, 'read', true, true], 'the Treasurer');
+  as({ role: 'leader', api: true, positions: ['comms'] });
+  eq(look(), [false, false, false, false, 'read', false, false], 'Communications: reads, edits nothing');
+  as({ role: 'admin', api: true });
+  eq(look(), [true, true, true, true, 'edit', true, true], 'an admin');
+  // The words (the treasurer's review of 045e7ac, 2).
+  as({ role: 'leader', api: true, positions: ['kernel'] });
+  eq([run("readOnlySay('ledger')"), run("readOnlySay('sharing')"), run("readOnlySay('')")],
+    ['Your positions don’t include the ledger. Ask the Treasurer or a pack admin.', 'Your positions don’t include sharing. Ask a pack admin.',
+      'Your positions don’t include changing this. Ask a pack admin.'], 'a leader');
+  as({ role: 'viewer', api: true });
+  eq(run("readOnlySay('ledger')"), 'Your account needs a pack position before you can change anything. Ask a pack admin.', 'a retired viewer');
+  as({ role: 'viewer' });
+  eq(run("readOnlySay('ledger')"), 'Read-only access — ask a pack admin to make you an editor.', 'Firestore keeps its roles');
+  ok(!/make you an editor/.test(SCRIPT.replace(/function readOnlySay[\s\S]*?\n  \}/, '')), 'the old toast, outside readOnlySay (Firestore\'s words)');
+  // Every section the table knows has words.
+  eq(Object.keys(vm.runInContext('SECTION_SAY', c)).sort(), ACCESS_JSON().sections.slice().sort(), 'SECTION_SAY covers the table\'s sections');
 });
 
 atest('positions: the table is the plan\'s matrix, assistants are their principals, and a parent sees nothing', async () => {
@@ -17164,7 +17222,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'syncDocIdSource', 'sync', 'fixedSyncBlocked', 'fixedFeedBlocked', 'haltFixedSync', 'syncStop', 'clearAccountsRuntime',
   'syncFail', 'apiBackend', 'backendConfigured', 'loadBackend', 'cloudReady', 'packLinked', 'syncStart', 'subscribeDoc',
   'stopDocFeed', 'stopParentFeed', 'subscribeParentView', 'feedForRole', 'stopLocalWrites', 'applyRoleSubscription',
-  'applyInvitesSubscription', 'applyJoinSubscription', 'isGoogleUser', 'setSyncUser', 'accountsInForce', 'canEdit',
+  'applyInvitesSubscription', 'applyJoinSubscription', 'isGoogleUser', 'setSyncUser', 'accountsInForce', 'canEdit', 'ACCESS_TABLE', 'ACCESS_LEVELS', 'apiAccounts', 'accessFor', 'actionsFor', 'accessMemo', 'myAccess', 'sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'SECTION_SAY', 'readOnlySay',
   'parentMode', 'canPreviewParent', 'previewingParent', 'pendingMode', 'gateMode', 'isAdmin', 'adminCount', 'isLastAdmin',
   'recomputeMyRole', 'handleAccountsError', 'startAccounts', 'SESSION_REJECTS', 'startSessionAccounts', 'sessionRole',
   'LEADER_ROLES', 'applyMembersSubscription', 'INVITE_ROLES', 'inviteEmailKey', 'MEMBER_NAME_MAX', 'memberName',
@@ -17931,7 +17989,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var records = [], merged = [], toasts = [], firstAnswers = [];
       var fakeBe = { serverRevs: ${!!over.serverRevs}, serverTime: function () { return null; },
         pushPack: function (h, build) { var out = build(${JSON.stringify(over.remote)}); if (out.record) records.push(out.record); return now(out.result); } };
-      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; }
+      function fixedSyncBlocked() { return false; } function accountsInForce() { return false; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function mergeRemoteAppendOnly(d) { merged.push(d.rev); return 0; } function holdPushes() { return false; }
       function ledgerRowConflicts() { return []; }   // Phase 3, C6: the merge is stubbed, and so is its pre-check
       function ledgerLookCount() { return 0; } function noteLedgerLookAfterSync() {} function noteLedgerLookFromMerge() {}   // the merge is stubbed; so is what it brings on
@@ -17974,7 +18032,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
       var timers = [], adopted = 0;
       function scheduleParentViewRefresh() {} function renderSyncPill() {} function render() {} function syncPush() {}
       function clearTimeout() {} function setTimeout(fn) { timers.push(fn); return 't'; }
-      function canEdit() { return true; } function save() {} function showToast() {} function canReopenStatement() { return true; }
+      function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function save() {} function showToast() {} function canReopenStatement() { return true; }
       function normalizeState(p) { return p && typeof p === 'object' ? p : null; }
       function adoptRemote(d) { adopted += 1; state.rev = d.rev; return true; }
       var ui = { tab: 'home', overlay: null };
@@ -17997,7 +18055,7 @@ test('api client: on the pack’s server the rev is the server’s, and a save i
     const ctx = vm.createContext({});
     vm.runInContext(`
       var pushed = 0;
-      function canEdit() { return true; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; } function canReopenStatement() { return true; }
+      function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function render() {} function showToast() {} function scheduleSyncPush() { pushed += 1; } function canReopenStatement() { return true; }
       var ui = { overlay: { kind: 'sync-conflict', remote: { rev: 9 } } }, state = { rev: 2 };
       var sync = { backend: { serverRevs: ${serverRevs} } };
       ${['seasonMoved', 'seasonClosedTwice', 'seasonCloseoutOf', ...C8_SYNC_FNS, 'arrOf', 'keepLocalCopy', 'keepLocalNeedsAdmin'].map(decl).join('\n')}
@@ -18748,7 +18806,7 @@ function srLeaderCtx(o) {
       } } };
     function shiftReportsOn() { return true; }
     function parentMode() { return false; }
-    function canEdit() { return sync.myRole === 'admin' || sync.myRole === 'editor'; }
+    function canEdit() { return sync.myRole === 'admin' || sync.myRole === 'editor'; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function commit() { if (!canEdit()) return false; commits += 1; return true; }
     function showToast(m) { toasts.push(m); }
     function render() {}
@@ -20924,7 +20982,7 @@ function chooserHtml(mine, cloud, over) {
     ${FORMAT_GATE_SRC()}
     function fixedPackMode() { return true; }
     // (Owner decision 22: signed in as \`over.role\`, or, with none, a pack with no accounts, where everyone edits.)
-    function canEdit() { return true; } function accountsInForce() { return ${!!(over && over.role)}; }
+    function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function accountsInForce() { return ${!!(over && over.role)}; }
     var sync = { dirty: ${!(over && over.clean)}, myRole: ${JSON.stringify((over && over.role) || '')} };
     var state = ${JSON.stringify(mine)};
     var ui = { armed: null, overlay: Object.assign({ kind: 'sync-conflict', remote: { rev: 4, json: ${JSON.stringify(JSON.stringify(cloud))} } }, ${JSON.stringify(over || {})}) };`, ctx);
@@ -22706,7 +22764,7 @@ const C2R_MORE = `
   var undo = null, undoWords = null, marks = [], editor = true;
   state.ledgerAside = [];
   ui.voidAsk = null; ui.voidWhy = '';
-  function canEdit() { return editor; }
+  function canEdit() { return editor; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
   function markGone(log, rows, back) { marks.push([log, rows.map(function (x) { return typeof x === 'string' ? x : x.id; }), !!back]); }
   function deleteWithUndo(label, restore, words) { undo = restore; undoWords = [label, words || null]; commit(); }
   // The ✕, the reason typed, and Void it.
@@ -26475,7 +26533,7 @@ test('reload gate: nothing is published to parents while held, and no move file 
     const ctx = vm.createContext({});
     vm.runInContext(FAKE_BE + `
       function buildParentView() { return { events: [] }; }
-      function accountsInForce() { return true; } function canEdit() { return true; }
+      function accountsInForce() { return true; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
       function fixedSyncBlocked() { return false; } function clearTimeout() {} function render() {} function renderSyncPill() {}
       var parentViewTimer = null, parentViewFingerprint = null, state = {}, ui = { overlay: null };
       var sync = { backend: fakeBe, docId: 'P', joinLoaded: true, pack: { docId: 'P' }, firstSnap: false };
@@ -26505,7 +26563,7 @@ const gateStoreCtx = (stored) => {
     var localStorage = { getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
       setItem: function (k, v) { store[k] = String(v); } };
     var toasts = [], renders = 0, pushes = 0;
-    function showToast(m) { toasts.push(m); } function render() { renders += 1; } function canEdit() { return true; }
+    function showToast(m) { toasts.push(m); } function render() { renders += 1; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function syncCharges() {} function scheduleSyncPush() { pushes += 1; } function schedulePersist() {}
     function clearTimeout() {} function freshState() { return { version: 1, scouts: [], fresh: true }; }
     var liveEdit = false, persistTimer = null, persistPending = false, saveWarned = false;
@@ -26828,7 +26886,7 @@ atest('reload gate, api: a newer page’s record on the server holds a leader’
   for (const local of ['empty', 'own copy']) {
     const w = await (await apiWorld()).seed();
     w.state(4, NEWER);
-    const ed = await (await apiClient(w, 'editor', local === 'empty' ? {} : { state: PACK_STATE({ packName: 'Mine' }) })).start(1200);
+    const ed = await (await apiClient(w, 'admin2', local === 'empty' ? {} : { state: PACK_STATE({ packName: 'Mine' }) })).start(1200);
     ed.run(GATE_LINE.map(decl).join('\n'));
     // The client's commit is a stub without the hold; the page's own commit refuses every edit
     // while either hold is on (cae8e9f), so this one does too: the page's line, as it is written.
@@ -26856,7 +26914,7 @@ atest('reload gate, api: a newer page’s record on the server holds a leader’
   // Heard in this page's format first (and published), then a newer page saves and the poll brings it.
   const w = await (await apiWorld()).seed();
   w.state(3, PACK_STATE());
-  const ed = await (await apiClient(w, 'editor')).start(1200);
+  const ed = await (await apiClient(w, 'admin2')).start(1200);
   eq([ed.get('[state.packName, sync.newerFormat]'), ed.log.indexOf('PUT /P/view') >= 0], [['Test Pack', false], true],
     'control: the pack in this page’s format is taken and published');
   apiSetPack(w, 4, NEWER);
@@ -27104,7 +27162,7 @@ function c5View(statements, more) {
     ${['FLEUR', 'ledgerActor', 'ledgerActorUid'].map(decl).join('\n')}
     // Pat Treasurer (u1), an editor, who signed Sep 30.
     var ui = { armed: null }, sync = { user: { uid: 'u1', displayName: 'Pat Treasurer' } }, editor = true, admin = false;
-    function canEdit() { return editor; }
+    function canEdit() { return editor; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function isAdmin() { return admin; } function accountsInForce() { return !!sync.user; }
     function todayISO() { return '2026-10-03'; }
     function canReopenStatement() { return false; }
@@ -27228,7 +27286,7 @@ const c5Page = (o) => c2tPage({ book: { reconciledThrough: '2026-09-30' }, more:
   // Who is an admin (admin, as C2T_MORE's canReopenStatement reads it) and whether accounts are in force.
   function isAdmin() { return admin; } function accountsInForce() { return !!sync.user; }
   ui.stReopenAsk = null; ui.stReopenWhy = '';
-  function canEdit() { return editor; }
+  function canEdit() { return editor; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
   function commit() { commits += 1; return true; }   // as the page's says it took the change
   state.statements = [${JSON.stringify(C5_LEGACY())}, ${JSON.stringify(C5_SEP())}];
   function st(id) { return state.statements.find(function (x) { return x.id === id; }); }
@@ -27347,7 +27405,7 @@ test('C5: only an admin can reopen, only the newest statement in force, with a r
     [C5_SEP(), book, true, 'Wrong', '']];
   table.forEach(([st, b, admin, why, want], i) => eq(r.statementReopenRefusal(st, b, admin, why), want, 'case ' + i));
   // Who is an admin here: the role, or a pack with no accounts (everyone edits it all).
-  const who = (o) => { const c = sandbox(['canReopenStatement', 'isAdmin', 'canEdit', 'accountsInForce']); c.sync = o; return c.canReopenStatement(); };
+  const who = (o) => { const c = sandbox(['canReopenStatement', 'isAdmin', 'canEdit', 'accountsInForce', 'arrOf', 'ACCESS_TABLE', 'ACCESS_LEVELS', 'apiAccounts', 'accessFor', 'actionsFor', 'accessMemo', 'myAccess', 'sectionAccess', 'canEditSection', 'canSeeSection', 'canDo', 'SECTION_SAY', 'readOnlySay']); c.sync = o; return c.canReopenStatement(); };
   eq([who({ user: { uid: 'a' }, myRole: 'admin' }), who({ user: { uid: 'a' }, myRole: 'editor' }), who({ user: { uid: 'a' }, myRole: 'viewer' }), who({ user: null })],
     [true, false, false, true], 'canReopenStatement');
 
@@ -29466,22 +29524,29 @@ test('C6, Firestore: a year closed out separately on two devices is not merged; 
 });
 
 atest('C6, api: a year closed out separately on two devices is not merged; the leader keeps one whole copy', async () => {
-  // B is a (retired) editor: its page still edits, and nothing below reaches the server until B is an admin.
-  const { a, b, server } = await apiGonePair(undefined, 'editor');
+  // B is the Treasurer (a leader who edits the ledger, not an admin; the retired editor edits nothing
+  // now): nothing below reaches the server until B is an admin.
+  const w = await (await apiWorld()).seed();
+  seedLeader(w, 'lead_treasurer', ['treasurer']);
+  w.state(3, GONE_API_STATE());
+  const a = await (await apiClient(w, 'owner')).start();
+  const b = await (await apiClient(w, 'lead_treasurer')).start();
+  for (const c of [a, b]) c.run(GONE_EXTRA(c.who));
+  const server = () => serverState(w).json;
   b.run(C6_CLOSE('B', 2).replace('commit()', ''));
   await a.edit(C6_CLOSE('A', 1).replace('commit()', ''));
   b.reset();
   b.run('commit()');
   await settle([b], 800);
   eq([b.log.filter((l) => /^PUT/.test(l)), server().ledger.map((e) => e.id), b.get('ui.overlay && ui.overlay.kind')], [[], ['co-A'], 'sync-conflict'], 'B merged, or wasn’t asked');
-  // Owner decision 22 — B is an editor: keeping its copy over A's close-out is an admin's. Refused, the
+  // Owner decision 22 — B is not an admin: keeping its copy over A's close-out is an admin's. Refused, the
   // choice still open, nothing sent.
   b.run('keepLocalCopy()');
   await settle([b], 800);
   eq([b.get('toasts[toasts.length - 1]'), b.get('ui.overlay && ui.overlay.kind'), b.log.filter((l) => /^PUT/.test(l)), server().archives.map((x) => x.id)],
     [b.get('KEEP_LOCAL_REFUSED'), 'sync-conflict', [], ['arc-A']], 'an editor kept its copy over another close-out');
   // Made an admin, B keeps its own.
-  a.run("setMemberRole('uid-editor', 'admin')");
+  a.run("setMemberRole('uid-lead-treasurer', 'admin')");
   await settle([a]);
   await b.poll();
   await settle([b], 800);
@@ -30913,7 +30978,7 @@ test('C8 security H1: keeping this device’s copy over a cloud copy with a clos
     const ctx = vm.createContext({});
     vm.runInContext(`
       var logged = [], toasts = [], pushed = 0;
-      function canEdit() { return true; } function canReopenStatement() { return ${admin}; } function render() {} function save() {}
+      function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } function canReopenStatement() { return ${admin}; } function render() {} function save() {}
       function showToast(m) { toasts.push(m); } function scheduleSyncPush() { pushed += 1; } function logLedger(op, row, o) { logged.push([op, row, o && o.why]); }
       var ui = { overlay: { kind: 'sync-conflict', remote: ${JSON.stringify(rec([book]))} } }, state = { rev: 2, budget: { programYear: 2026 }, archives: [], closedBooks: [] };
       var sync = { backend: { serverRevs: false } };
@@ -31369,7 +31434,7 @@ const C8R_FNS = ['seasonBookOf', 'closedBookOf', 'closedBookLines', 'closedBookS
   'ledgerStatementName', 'ledgerRowName', 'ledgerEntryNamed', 'fmtDateYear', 'closedRvFormHtml', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'fmtDateShort', 'LEDGER_OP_LABELS', 'LEDGER_FIELD_LABELS', 'ledgerLogValue', 'ledgerEventLines', 'ledgerLogWhen', 'ledgerCap'];
 const c8r = (books, extra) => {
   const x = sandbox(C8R_FNS);
-  vm.runInContext(`var state = { closedBooks: ${JSON.stringify(books)} }; function canEdit() { return true; } var ui = { armed: null }; ${extra || ''}`, x);
+  vm.runInContext(`var state = { closedBooks: ${JSON.stringify(books)} }; function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } var ui = { armed: null }; ${extra || ''}`, x);
   return x;
 };
 const C8R_FULL = () => C8_BOOK_OF(2026, 'arc-1', {
@@ -31474,7 +31539,7 @@ test('C8-9: a closed year’s entry is reversed by a counted reversal in the cur
   run(`${['closedBookOf', 'closedBookEntryFor', 'closedBookReversed', 'CLOSED_RV_FAMILY', 'CLOSED_RV_FAMILY_DONE', 'closedRvToast', 'fmtDateShort', 'closedRvRefusal', 'ledgerClosedYearReversal', 'ledgerStampClean', 'ledgerContactScrub', 'arrOf', 'closedYearText'].map(decl).join('\n')}
     var logs = []; function logLedger(op, row, more) { logs.push([op, row, more]); }
     function ledgerActor() { return 'Pat Example'; } function ledgerActorUid() { return 'u-pat'; }
-    function canEdit() { return editor; } var editor = true;
+    function canEdit() { return editor; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; } var editor = true;
     state.closedBooks = [${JSON.stringify(book)}]; state.ledger = []; state.ledgerAside = []; ui.armed = null; ui.closedRvId = ''; ui.closedRvWhy = '';`);
   const T = 'tap("closed-rv:2026")';
   // Nothing picked, no reason: refused with words, nothing recorded.
@@ -31745,7 +31810,7 @@ test('C8 re-check M-B: a closed book with no season summary is a row of its own 
   const run = (js) => vm.runInContext(js, W), got = (js) => JSON.parse(JSON.stringify(vm.runInContext(js, W)));
   run(`${['seasonBookOf', 'closedBookOf', 'closedBookOrphans', 'closedBookOrphanRow', 'closedBookBlockHtml', 'closedYearText', 'arrOf', 'delSeasonText', 'delSeasonSubject', 'closedGoneAdd', 'mergeClosedGone', 'normalizeClosedGone',
     'ledgerActorUid', 'ledgerContactScrub', 'DEL_SEASON_REFUSED', 'DEL_SEASON_WHY_FIRST'].map(decl).join('\n')}
-    function closedBookLines() { return ['lines']; } function closedBookStatementsHtml() { return 'ST'; } function closedRvFormHtml() { return ''; } function canEdit() { return true; }
+    function closedBookLines() { return ['lines']; } function closedBookStatementsHtml() { return 'ST'; } function closedRvFormHtml() { return ''; } function canEdit() { return true; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     var logs = []; function logLedger(op, row, more) { logs.push([op, row, more.why]); }
     state.archives = [{ id: 'arc-1', kind: 'season', year: 2026 }]; state.closedGone = [];
     state.closedBooks = [${JSON.stringify(C8_BOOK_OF(2026, 'arc-1'))}, ${JSON.stringify(C8_BOOK_OF(2025, 'arc-0'))}]; ui.armed = null; ui.overlay = null; ui.archiveOpen = {};`);
@@ -32596,7 +32661,7 @@ function noteCtx(edit) {
     ${slice('ADV_NOTE_MAX')}\n${slice('ADV_NOTES_MAX_TOTAL')}
     var state = { advNotes: { 'Wolf :: Bobcat': { text: 'old', by: 'Pat', at: '2026-09-01' } } };
     var EDIT = ${edit}, commits = 0, toasts = [], renders = 0;
-    function canEdit() { return EDIT; }
+    function canEdit() { return EDIT; } function canEditSection() { return canEdit(); } function canSeeSection() { return true; } function readOnlySay() { return 'Read-only access — ask a pack admin to make you an editor.'; }
     function commit() { if (!EDIT) return false; commits++; return true; }
     function render() { renders++; }
     function showToast(msg, opts) { toasts.push({ msg: msg, opts: opts }); }
@@ -34295,7 +34360,7 @@ test('council money: settling makes the commission actual, banked − paid + com
 
 test('council money: the settle step is an editor’s, logged on the book, taken back with two taps, and gone at close-out', () => {
   const go = /if \(act === 'council-settle-go'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/canEdit\(\)/.test(go) && /state\.book\.closedAt/.test(go) && /state\.book\.councilSettled = \{ on: sd\.on, how: sd\.how, by: ledgerActor\(\), byUid: ledgerActorUid\(\), at: new Date\(\)\.toISOString\(\),\s+approvedBy: councilApproverClean\(sd\.approvedBy\) \};/.test(go) &&
+  ok(/canEditSection\('ledger'\)/.test(go) && /state\.book\.closedAt/.test(go) && /state\.book\.councilSettled = \{ on: sd\.on, how: sd\.how, by: ledgerActor\(\), byUid: ledgerActorUid\(\), at: new Date\(\)\.toISOString\(\),\s+approvedBy: councilApproverClean\(sd\.approvedBy\) \};/.test(go) &&
     /if \(!councilApproverClean\(sd\.approvedBy\)\) \{ showToast\('Enter the name of the Committee Chair who approved the settlement\.'\); return; \}/.test(go) &&
     /logLedger\('settle', 'book', \{ f: \{ councilSettled: \[sdWas \|\| null, councilSettledText\(state\.book\.councilSettled\)\] \} \}\)/.test(go), 'Mark settled');
   const un = /if \(act === 'council-unsettle'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
@@ -34880,11 +34945,11 @@ atest('sync base, api: a viewer is never asked, and takes the pack’s copy', as
 atest('sync base, api: a device from before the base takes the pack’s copy when nothing says it has unsaved work, and is asked when something does', async () => {
   const w = await (await apiWorld()).seed();
   w.state(5, Object.assign(SB_SEED(), { rev: 5, packName: 'Newer' }));
-  const old = await (await apiClient(w, 'editor', { state: SB_SEED() })).start(800);
+  const old = await (await apiClient(w, 'admin2', { state: SB_SEED() })).start(800);
   eq([old.get('[ui.overlay && ui.overlay.kind, state.packName, syncBaseGet() && syncBaseGet().rev]'), sbPuts(old)], [[null, 'Newer', 5], 0], 'quietly');
   const w2 = await (await apiWorld()).seed();
   w2.state(5, Object.assign(SB_SEED(), { rev: 5, packName: 'Newer' }));
-  const dirty = await (await apiClient(w2, 'editor', { state: SB_SEED(), unsynced: true })).start(800);
+  const dirty = await (await apiClient(w2, 'admin2', { state: SB_SEED(), unsynced: true })).start(800);
   eq([dirty.get('[ui.overlay && ui.overlay.kind, state.packName]'), sbPuts(dirty)], [['sync-conflict', 'Test Pack'], 0], 'asked, whole copy');
 });
 
@@ -34951,7 +35016,7 @@ atest('sync fix (security 1, HIGH): a device from before the base never drops of
   const run = async (serverRev, local) => {
     const w = await (await apiWorld()).seed();
     w.state(serverRev, Object.assign(SB_SEED(), { rev: serverRev, packName: 'Newer' }));
-    const c = await apiClient(w, 'editor', { state: local });   // no base, no marker: a page from before this change
+    const c = await apiClient(w, 'admin2', { state: local });   // no base, no marker: a page from before this change
     await c.start(800);
     return [c.get('[ui.overlay && ui.overlay.kind, state.packName]'), sbPuts(c), serverState(w).rev];
   };
@@ -35001,7 +35066,7 @@ atest('sync fix (security 2): a server copy behind this device’s base (a resto
   w.state(3, SB_SEED());
   const mine = SB_SEED();
   mine.scouts[0].den = 'Bear';
-  const c = await apiClient(w, 'editor', { state: mine, base: SB_BASE(6, SB_SEED()), unsynced: true });
+  const c = await apiClient(w, 'admin2', { state: mine, base: SB_BASE(6, SB_SEED()), unsynced: true });
   await c.start(800);
   eq([c.get('[ui.overlay && ui.overlay.kind, !!rowChoice()]'), sbPuts(c)], [['sync-conflict', false], 0], 'merged over a restore at first answer');
   // In a push (the in-session path): the sentinel, and the push hands it to the whole-copy choice.

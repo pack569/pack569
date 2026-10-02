@@ -5733,7 +5733,7 @@
     // push. Every mutation path routes through commit(), so this one guard makes the whole
     // app genuinely read-only for them — the published security rules are the real backstop.
     if (!canEdit()) {
-      showToast('Read-only access — ask a pack admin to make you an editor.');
+      showToast(readOnlySay(''));
       // The change handler already mutated the in-memory state; reload the last persisted
       // copy and re-render so nothing stray lingers to ride a later legitimate commit if
       // this user is promoted mid-session (L-2). Nothing was ever saved or pushed.
@@ -14322,6 +14322,8 @@
     user: null,                // Google identity {uid, displayName, email, photoURL} or null (null = anonymous/legacy)
     members: [],               // live roster from packs/{docId}/members — runtime only, lives in Firestore
     myRole: null,              // this user's role: 'admin' | 'editor' | 'viewer' | 'pending' | null
+    myPositions: [],           // the pack's own server: the positions this account holds (myAccess)
+    leadDens: [],              // …and the dens it leads as a Den Leader (own-den scope)
     ownerUid: null,            // packmeta/{docId}.owner — the first person to sign in / claim the pack
     ownerHealing: false,       // the owner's member doc vanished and ensureMyMemberDoc is recreating it
     accountsUnavailable: false,// true when packmeta/members reads are permission-denied (legacy rules) → roles NOT enforced
@@ -14631,6 +14633,8 @@
     sync.membersDeniedAs = null;
     sync.members = [];
     sync.myRole = null;
+    sync.myPositions = [];
+    sync.leadDens = [];
     sync.ownerUid = null;
     sync.accountsUnavailable = false;
     // Parent phase: the derived-view feed + invite listener belong to ONE pack (docId), so
@@ -15744,9 +15748,116 @@
   // collections are reachable. Anonymous, legacy-rules (permission-denied), and no-config
   // all fall through to "not in force" → everyone edits, precisely today's behavior.
   function accountsInForce() { return !!(sync.user && !sync.accountsUnavailable); }
+  // Does this account edit anything at all? With roles not in force, everyone edits everything, as
+  // always. On Firestore: admin and editor. On the pack's own server (pack positions): a leader whose
+  // positions edit at least one section, or an admin; a retired editor or viewer edits nothing.
+  // WHICH parts they edit is canEditSection's; this is only "anything".
   function canEdit() {
     if (!accountsInForce()) return true;              // anonymous / legacy / accounts-unavailable → full edit
-    return sync.myRole === 'admin' || sync.myRole === 'editor';
+    var a = myAccess().access;
+    return ACCESS_TABLE.sections.some(function (s) { return a[s] === 'edit'; });
+  }
+  // ---- Pack positions: what this account may do with each part of the app (stage 1, 2026-10-02) ----
+  // Each section of the app (ACCESS_TABLE.sections: WORKSPACES' sections, plus 'attendance',
+  // 'calendar.denmeeting' and 'deposits') is 'edit', 'read' or 'hidden' for this account:
+  //   - roles not in force (no sign-in, legacy rules, no accounts): 'edit' everywhere, as always;
+  //   - Firestore (sync.backend has no startSession): the four roles, as Part C has them: admin and
+  //     editor edit everything, a viewer reads it, a parent or pending account sees none of it;
+  //   - the pack's own server: functions/_lib/access.js effectiveAccess, from the role and the
+  //     positions the server says this account holds (sync.myPositions, from the session and the
+  //     members list). The SERVER enforces it (the pack PUT refuses a section the caller can't
+  //     edit); this only lets the page say so first, and hide what is hidden. HIDDEN IS NOT
+  //     PRIVATE in stage 1: the whole record still reaches every leader's device.
+  // A position is not a job: nothing here reads JOBS, myJobs() or leaders[].jobs (the harness checks).
+  // Memoized on what it is decided from.
+  var ACCESS_LEVELS = ['hidden', 'read', 'edit'];
+  function apiAccounts() { return !!(sync.backend && sync.backend.startSession); }
+  // effectiveAccess (access.js), on the page's copy of the table: section (and bucket) -> level.
+  function accessFor(role, positions) {
+    var out = {}, all = ACCESS_TABLE.sections.concat(['admin', 'shared']);
+    function fill(v) { all.forEach(function (s) { out[s] = v; }); }
+    if (role === 'admin') { fill('edit'); return out; }
+    if (role === 'editor' || role === 'viewer') { fill('read'); return out; }
+    fill('hidden');
+    if (role !== 'leader') return out;
+    var held = arrOf(positions), any = false;
+    ACCESS_TABLE.sections.forEach(function (s) {
+      var best = 0;
+      held.forEach(function (p) {
+        var a = typeof p === 'string' && Object.prototype.hasOwnProperty.call(ACCESS_TABLE.access, p) ? ACCESS_TABLE.access[p] : null;
+        if (!a) return;
+        var lv = a.edit.indexOf(s) !== -1 ? 'edit' : a.hidden.indexOf(s) !== -1 ? 'hidden' : a['default'];
+        best = Math.max(best, ACCESS_LEVELS.indexOf(lv));
+      });
+      out[s] = ACCESS_LEVELS[best];
+      if (best === 2) any = true;
+    });
+    if (out.calendar === 'edit') out['calendar.denmeeting'] = 'edit';
+    out.shared = any ? 'edit' : 'read';
+    out.admin = 'read';
+    return out;
+  }
+  // effectiveActions (access.js): action -> true/false. An admin may do each; a leader, an action
+  // one of their positions lists; nobody else.
+  function actionsFor(role, positions) {
+    var out = {}, held = arrOf(positions);
+    Object.keys(ACCESS_TABLE.actions).forEach(function (a) {
+      out[a] = role === 'admin' || (role === 'leader' && held.some(function (p) { return ACCESS_TABLE.actions[a].indexOf(p) !== -1; }));
+    });
+    return out;
+  }
+  var accessMemo = { key: null, access: null, actions: null };
+  function myAccess() {
+    var inForce = accountsInForce(), api = apiAccounts();
+    var key = (inForce ? 1 : 0) + '|' + (api ? 1 : 0) + '|' + String(sync.myRole || '') + '|' + arrOf(sync.myPositions).join(',');
+    if (accessMemo.key === key) return accessMemo;
+    var access, actions = {};
+    if (!inForce) {
+      access = accessFor('admin', []);
+      Object.keys(ACCESS_TABLE.actions).forEach(function (k) { actions[k] = true; });
+    } else if (!api) {
+      // Firestore: Part C's four roles. An editor edits everything but the admin-only keys.
+      var r = sync.myRole;
+      access = accessFor(r === 'admin' || r === 'editor' ? 'admin' : r === 'viewer' ? 'viewer' : 'none', []);
+      if (r === 'editor') access.admin = 'read';
+      Object.keys(ACCESS_TABLE.actions).forEach(function (k) { actions[k] = r === 'admin' || r === 'editor'; });
+    } else {
+      access = accessFor(sync.myRole, sync.myPositions);
+      actions = actionsFor(sync.myRole, sync.myPositions);
+    }
+    accessMemo = { key: key, access: access, actions: actions };
+    return accessMemo;
+  }
+  // 'edit' | 'read' | 'hidden' for a section id; a section the table doesn't know is the admin
+  // bucket's (as the server treats a key it doesn't know).
+  function sectionAccess(id) {
+    var a = myAccess().access;
+    return Object.prototype.hasOwnProperty.call(a, id) ? a[id] : a.admin;
+  }
+  function canEditSection(id) { return sectionAccess(id) === 'edit'; }
+  function canSeeSection(id) { return sectionAccess(id) !== 'hidden'; }
+  // An action of the table (shiftVerify, shiftUndo) this account may do.
+  function canDo(action) { return myAccess().actions[action] === true; }
+  // Who to ask about a section a leader can't edit, and what to call it: [what, who]. Plain words
+  // for the toast below; the usual owner is the position that runs it day to day.
+  var SECTION_SAY = {
+    home: ['Home', ''], calendar: ['the calendar', 'the Cubmaster'], 'calendar.denmeeting': ['den meetings', 'the Cubmaster'],
+    attendance: ['attendance', 'a den leader'], denplan: ['den plans', 'the Cubmaster'], derby: ['the derby', 'the Derby Chair'],
+    camping: ['camping', 'the Outdoor Chair'], roster: ['the roster', 'the Membership Chair'], advancement: ['advancement', 'the Advancement Chair'],
+    joining: ['new families', 'the Membership Chair'], storefronts: ['storefronts', 'the Popcorn Kernel'], totals: ['popcorn sales', 'the Popcorn Kernel'],
+    rewards: ['popcorn rewards', 'the Popcorn Kernel'], inventory: ['popcorn inventory', 'the Popcorn Kernel'],
+    council: ['the council\u2019s popcorn', 'the Popcorn Kernel'], budget: ['the budget', 'the Treasurer'], ledger: ['the ledger', 'the Treasurer'],
+    deposits: ['deposits', 'the Treasurer'], dues: ['dues and fees', 'the Treasurer'], fundraisers: ['fundraisers', 'the Treasurer'],
+    sharing: ['sharing', ''], people: ['the leaders list', 'the Committee Chair'], season: ['the season', 'the Committee Chair']
+  };
+  // The words for an edit this account can't make (the treasurer's review of 045e7ac, 2: the old
+  // toast sent everyone to a role that no longer exists). `section` is the part they tried to change.
+  function readOnlySay(section) {
+    if (!accountsInForce() || !apiAccounts()) return 'Read-only access \u2014 ask a pack admin to make you an editor.';
+    if (sync.myRole === 'editor' || sync.myRole === 'viewer') return 'Your account needs a pack position before you can change anything. Ask a pack admin.';
+    var say = SECTION_SAY[section];
+    if (!say) return 'Your positions don\u2019t include changing this. Ask a pack admin.';
+    return 'Your positions don\u2019t include ' + say[0] + '. Ask ' + (say[1] ? say[1] + ' or ' : '') + 'a pack admin.';
   }
   // Parent phase — this user must NEVER see the pack record. Their whole app (renderParentApp)
   // is built from sync.parentView alone, so nothing in `state` can leak into their screen
@@ -15824,12 +15935,16 @@
   }
   function recomputeMyRole() {
     sync.myRole = null;
+    sync.myPositions = [];
+    sync.leadDens = [];
     var uid = sync.user ? sync.user.uid : null;
     if (!uid) return;
     for (var i = 0; i < sync.members.length; i++) {
       if (sync.members[i].uid === uid) {
         sync.myRole = sync.members[i].role || null;
         if (typeof sync.members[i].name === 'string') sync.myName = sync.members[i].name;
+        sync.myPositions = arrOf(sync.members[i].positions).slice();
+        sync.leadDens = arrOf(sync.members[i].dens).slice();
         return;
       }
     }
@@ -15879,6 +15994,8 @@
       sync.membersScope = null;
       sync.members = [];
       sync.myRole = null;
+      sync.myPositions = [];
+      sync.leadDens = [];
       sync.ownerUid = null;
     }
     if (ui.tab === 'pack') render();
@@ -15954,6 +16071,9 @@
       sync.ownerUid = s.ownerUid || null;
       sync.myRole = s.role || null;
       sync.myName = s.member && typeof s.member.name === 'string' ? s.member.name : null;
+      // Pack positions (the pack's own server): what this account may edit (myAccess), and the dens it leads.
+      sync.myPositions = s.member ? arrOf(s.member.positions).slice() : [];
+      sync.leadDens = s.member ? arrOf(s.member.dens).slice() : [];
       if (!sync.myRole) sync.joinRejected = SESSION_REJECTS.indexOf(s.rejected) !== -1 ? s.rejected : 'nolink';
       render();
       runAfter(sync.myRole);
@@ -20320,7 +20440,7 @@
   function saveRowChoices() {
     var rc = rowChoice();
     if (!rc) return;
-    if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; }
+    if (!canEdit()) { showToast(readOnlySay('')); render(); return; }
     // (The reload gate has dropped the choice already, dropCopyChoice; and commit refuses.)
     // (Security review of C6, F6 — which also asks of it what a push would: a newer page's record, or
     // another close-out, and nothing is merged.)
@@ -20540,7 +20660,7 @@
     // Owner decision 22 — refused, the choice stays open (the cloud copy is still theirs to take).
     if (kept && kept.remote && keepLocalNeedsAdmin(kept.remote) && !canReopenStatement()) { showToast(KEEP_LOCAL_REFUSED); render(); return; }
     ui.overlay = null;
-    if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; } // M-3
+    if (!canEdit()) { showToast(readOnlySay('')); render(); return; } // M-3
     sync.conflict = null;
     // BACKEND 'api': the copy being overwritten is the one this leader was just shown, so it
     // counts as seen; only a save made after it is merged in at the push (syncPush).
@@ -39231,7 +39351,7 @@
     // as "Not the commission" does. A label, logged as an edit; a closed year takes nothing.
     // Owner, 2026-10-01 — the popcorn settled with the council (councilMoneyHtml).
     if (act === 'council-settle-open') {
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var soChk = councilMoneyCheck(state.ledger);
       ui.settleDraft = { on: todayISO(), how: soChk.paid ? 'paid' : soChk.checks ? 'payout' : 'paid' };
       render(); return;
@@ -39240,7 +39360,7 @@
     if (act === 'council-settle-go') {
       var sd = ui.settleDraft;
       if (!sd) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       if (state.book.closedAt) { showToast('This year is closed out.'); return; }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(sd.on || '') || COUNCIL_SETTLE_HOW.indexOf(sd.how) === -1) { showToast('Enter the date it was settled.'); return; }
       // Keith, 2026-10-02 — the settlement names the Committee Chair who approved it (named, not gated).
@@ -39254,7 +39374,7 @@
       commit(); return;
     }
     if (act === 'council-unsettle') {
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       arm(act, function () {
         if (!state.book.councilSettled) return;
         if (state.book.closedAt) { showToast('This year is closed out.'); return; }
@@ -39409,7 +39529,7 @@
       if (!vaRow) return;
       var vaLocked = ledgerLockedWhy(vaRow, state.book, '', 'void') || ledgerCancelledWhy(state, vaRow);   // Option B
       if (vaLocked) { showToast(vaLocked); return; }
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       if (ui.voidAsk !== vaId) ui.voidWhy = '';
       ui.voidAsk = vaId;
       render(); return;
@@ -39419,7 +39539,7 @@
       var vdId = act.split(':')[1];
       var vdRow = state.ledger.find(function (e) { return e.id === vdId; });
       if (!vdRow) { ui.voidAsk = null; render(); return; }
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       // Asked on the tap, not when the form opened: a sync can have locked it since.
       var vdWhy = String(ui.voidWhy || '').trim();
       var vdNo = ledgerLockedWhy(vdRow, state.book, '', 'void') || ledgerCancelledWhy(state, vdRow) ||   // Option B: the lock, a reversed entry,
@@ -39479,7 +39599,7 @@
       var uvRow = (state.ledgerAside || []).find(function (e) { return e.id === uvId && e.off === 'void'; });
       if (!uvRow) return;
       // Security review of C3 (minor) — said here, as Void it says it, not left to commit().
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       // Security re-check of option B (finding A) — nor a reversal whose entry has been reversed
       // again since (ledgerReversedAgainWhy): both would count. Asked on each tap, as the lock is.
       // Security pass on option B sign-off (1b) — nor one whose entry is now dated after it
@@ -39511,7 +39631,7 @@
       var fxId = act.slice('ledger-fix:'.length);
       var fxRow = state.ledger.find(function (e) { return e.id === fxId; });
       if (!fxRow) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       if (ui.fixAsk !== fxId) {
         ui.fixWhy = '';
         // Option B — and the reversal's date: today unless the treasurer picks another.
@@ -39527,7 +39647,7 @@
       var fgId = act.slice(act.indexOf(':') + 1);
       var fgRow = state.ledger.find(function (e) { return e.id === fgId; });
       if (!fgRow) { ui.fixAsk = null; render(); return; }
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var fgWhy = String(ui.fixWhy || '').trim();
       // Option B — the reversal's date as picked (the form starts it at ledgerReverseDateDefault).
       var fgOn = String((ui.fixDraft && ui.fixDraft.rvdate) || '');
@@ -39686,7 +39806,7 @@
     if (act.indexOf('st-review:') === 0) {
       var svSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-review:'.length); })[0];
       if (!svSt) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var svNo = statementReviewRefusal(svSt, statementReviewer(), state.book);
       if (svNo) { if (ui.armed === act) ui.armed = null; showToast(svNo); render(); return; }
       arm(act, function () {
@@ -39722,7 +39842,7 @@
     if (act.indexOf('st-balance:') === 0) {
       var sbSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-balance:'.length); })[0];
       if (!sbSt) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var sbNo = statementBalanceRefusal(sbSt, '0');
       if (sbNo) { showToast(sbNo); render(); return; }
       if (ui.stBalanceAsk !== sbSt.id) ui.stBalance = '';
@@ -39733,7 +39853,7 @@
     if (act.indexOf('st-balance-go:') === 0) {
       var sdSt = (state.statements || []).filter(function (x) { return x.id === act.slice('st-balance-go:'.length); })[0];
       if (!sdSt) { ui.stBalanceAsk = null; render(); return; }
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var sdNo = statementBalanceRefusal(sdSt, ui.stBalance);
       if (sdNo) { if (ui.armed === act) ui.armed = null; showToast(sdNo); render(); return; }
       arm(act, function () {
@@ -40456,7 +40576,7 @@
     }
     if (act.indexOf('closed-rv:') === 0) {
       var crYear = +act.split(':')[1], crBook = closedBookOf(state, crYear);
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      if (!canEditSection('ledger')) { showToast(readOnlySay('ledger')); return; }
       var crNo = closedRvRefusal(crBook, ui.closedRvId, ui.closedRvWhy, arrOf(state.ledger).concat(arrOf(state.ledgerAside)), state.closedBooks);
       if (crNo) { showToast(crNo); return; }
       arm(act, function () {
@@ -40746,7 +40866,7 @@
       var anKey = String(el.dataset.key || '');
       var anI = anKey.indexOf(' :: ');
       if (anI < 1 || DENS.indexOf(anKey.slice(0, anI)) === -1) return;
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); render(); return; }
+      if (!canEditSection('denplan')) { showToast(readOnlySay('denplan')); render(); return; }
       var anText = String(el.value || '').replace(/\r\n?/g, '\n').slice(0, ADV_NOTE_MAX);
       var anPrev = state.advNotes[anKey] || null;
       if ((anPrev ? anPrev.text : '') === anText) return;
@@ -41732,7 +41852,8 @@
       return;
     }
     if (kind === 'plan-adv') {
-      if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
+      // It adds a meeting to the calendar: the calendar's, not the den plans' (a den leader asks the Cubmaster).
+      if (!canEditSection('calendar')) { showToast(readOnlySay('calendar')); return; }
       var paDen = f.dataset.den || '';
       var paName = advCanonicalName(paDen, fd.get('name'));
       if (!paName || DENS.indexOf(paDen) === -1) return;
