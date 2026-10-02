@@ -18,7 +18,11 @@
 --     "two different adults" rule, as the page's blockCashCheck has it);
 --   - at most one report per block is open or accepted at a time (the partial unique index);
 --   - (S-4) a second parent's confirmation is never the sender's own, and an accepted report
---     that needed one has it, or a leader's written override.
+--     that needed one has it, or a leader's written override;
+--   - (review round 1) an accepted report says who VERIFIED the cash: the confirming parent (two
+--     or more families), or the accepting leader who collected and counted it (one family), or
+--     else a leader's override with a written reason; and the accepting leader is never the
+--     sender or the confirmer.
 --
 -- Every uid, name and time is the server's, from the member row and its clock; the page never
 -- sends them. A report outlives what it is about on purpose: a removed member's report, or one
@@ -58,6 +62,14 @@ CREATE TABLE shift_reports (
   confirmed_by_name  TEXT CHECK (confirmed_by_name IS NULL OR length(confirmed_by_name) <= 120),
   confirmed_at       INTEGER,
   overridden         INTEGER NOT NULL DEFAULT 0 CHECK (overridden IN (0, 1)),
+  -- The accept itself, written once by the accepting leader and never changed afterwards (a later
+  -- send-back writes reviewed_*, not these), so the season's record keeps who accepted it and why.
+  -- verified_by_leader: on a one-family shift, the accepting leader collected and counted the cash.
+  accepted_by_uid    TEXT CHECK (accepted_by_uid IS NULL OR length(accepted_by_uid) BETWEEN 1 AND 128),
+  accepted_by_name   TEXT CHECK (accepted_by_name IS NULL OR length(accepted_by_name) <= 120),
+  accepted_at        INTEGER,
+  accept_note        TEXT NOT NULL DEFAULT '' CHECK (length(accept_note) <= 300),
+  verified_by_leader INTEGER NOT NULL DEFAULT 0 CHECK (verified_by_leader IN (0, 1)),
   -- A fresh random value on every write. An audit row is written only if the row still holds
   -- the stamp its own write set, so a write that lost a race leaves no audit row behind.
   stamp              TEXT NOT NULL CHECK (length(stamp) BETWEEN 1 AND 64),
@@ -65,8 +77,14 @@ CREATE TABLE shift_reports (
                                   AND reviewed_by_uid != submitted_by_uid)),
   CHECK (status != 'returned' OR (reviewed_by_uid IS NOT NULL AND reviewed_at IS NOT NULL)),
   CHECK (confirmed_by_uid IS NULL OR (confirmed_by_uid != submitted_by_uid AND confirmed_at IS NOT NULL)),
-  CHECK (status != 'accepted' OR needs_confirm = 0 OR confirmed_by_uid IS NOT NULL
-         OR (overridden = 1 AND length(trim(review_note)) > 0))
+  CHECK (status != 'accepted' OR (accepted_by_uid IS NOT NULL AND accepted_at IS NOT NULL)),
+  CHECK (accepted_by_uid IS NULL OR (accepted_by_uid != submitted_by_uid
+         AND (confirmed_by_uid IS NULL OR accepted_by_uid != confirmed_by_uid))),
+  CHECK (status != 'accepted'
+         OR (needs_confirm = 1 AND confirmed_by_uid IS NOT NULL)
+         OR (needs_confirm = 0 AND verified_by_leader = 1)
+         OR (overridden = 1 AND length(trim(accept_note)) > 0)),
+  CHECK (verified_by_leader = 0 OR needs_confirm = 0)
 );
 
 -- One open-or-accepted report per block. A second family's report for a block that already has

@@ -24,6 +24,10 @@
 //        takes a parent of a scout on that shift (linked on the Members card), not the sender.
 //   409 {error:'needs-confirm', code:'failed-precondition'}  S-4: accepting a report that needs a
 //        second parent's confirmation and has none, without override: true and a reason.
+//   409 {error:'not-collected', code:'failed-precondition'}  accepting a one-family shift's report
+//        without collected: true (the leader collected and counted the cash) or an override.
+//   409 {error:'too-many-open', code:'failed-precondition', reason}  'too-many-open': 3 reports
+//        already waiting from this account; 'too-many-today': 20 sent in the last day.
 //   413 {error:'too-large', code:'resource-exhausted'}       over the size limit
 //   429 {error:'rate-limited', code:'resource-exhausted'}    too many sign-up link tries
 //
@@ -61,6 +65,8 @@ export const reportMoved = (status) => json(409, { error: 'report-moved', code: 
 export const samePerson = () => json(409, { error: 'same-person', code: 'failed-precondition' });
 export const notShiftParent = () => json(409, { error: 'not-shift-parent', code: 'failed-precondition' });
 export const needsConfirm = () => json(409, { error: 'needs-confirm', code: 'failed-precondition' });
+export const notCollected = () => json(409, { error: 'not-collected', code: 'failed-precondition' });
+export const tooManyReports = (why) => json(409, { error: 'too-many-open', code: 'failed-precondition', reason: why });
 export const unavailable = (why) => json(503, { error: 'unavailable', code: 'unavailable', reason: why || '' });
 
 // Thrown anywhere under a route; the router sends its response.

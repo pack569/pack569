@@ -15534,7 +15534,7 @@ atest('api shift reports: every role on every verb — pending and strangers get
   const parentRid = ridOf('parent');
   // Accept and return: admins and editors only. Everyone else gets the fixed 403.
   for (const who of ['viewer', 'parent', 'newbie', 'pending', 'stranger']) {
-    denied(await w.act(who, parentRid, { action: 'accept', teCents: 100, cashCents: 0 }), who + ' accepting');
+    denied(await w.act(who, parentRid, { action: 'accept', teCents: 100, cashCents: 0, collected: true }), who + ' accepting');
     denied(await w.act(who, parentRid, { action: 'return', reviewNote: 'Recount' }), who + ' sending back');
   }
   // Edit and withdraw: the sender only — not even an admin, and not another parent.
@@ -15549,9 +15549,9 @@ atest('api shift reports: every role on every verb — pending and strangers get
   eq(w.sql("SELECT count(*) AS n FROM shift_reports WHERE status != 'submitted'")[0].n, 0, 'a refused call changed a report');
   eq(w.sql("SELECT count(*) AS n FROM audit WHERE action LIKE 'shift.%' AND action != 'shift.report'")[0].n, 0, 'a refused call left an audit row');
   // The ones allowed.
-  eq((await w.act('editor', parentRid, { action: 'accept', teCents: 100, cashCents: 0 })).status, 200, 'an editor accepts');
+  eq((await w.act('editor', parentRid, { action: 'accept', teCents: 100, cashCents: 0, collected: true })).status, 200, 'an editor accepts');
   eq((await w.act('admin2', ridOf('viewer'), { action: 'return', reviewNote: 'Recount please' })).status, 200, 'an admin sends one back');
-  eq((await w.act('viewer', ridOf('owner'), { action: 'accept', teCents: 100, cashCents: 0 })).status, 403, 'a viewer accepting a leader\'s');
+  eq((await w.act('viewer', ridOf('owner'), { action: 'accept', teCents: 100, cashCents: 0, collected: true })).status, 403, 'a viewer accepting a leader\'s');
   eq((await w.act('parent', parentRid, { action: 'withdraw' })).status, 409, 'withdrawing an accepted report');
   // A member sent back to pending, or removed, loses the lot at once.
   w.db.raw.prepare("UPDATE members SET role = 'pending' WHERE uid = 'uid-parent'").run();
@@ -15640,7 +15640,7 @@ atest('api shift reports: one report per block at a time — a second waits, an 
   eq([second.status, second.body.error, second.body.reason], [409, 'shift-reported', 'open'], 'a second report while one waits');
   eq((await w.report('parent')).body.reason, 'open', 'the same family sending twice');
   eq((await w.report('newbie', { blockId: 'b2' })).status, 200, 'another block is free');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 })).status, 200, 'accepted');
+  eq((await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'accepted');
   const third = await w.report('newbie');
   eq([third.status, third.body.reason], [409, 'accepted'], 'a report on an accepted block');
   // A leader reopens it; the family sends a corrected one.
@@ -15667,23 +15667,23 @@ atest('api shift reports: the sender edits or withdraws while it waits, a leader
   eq((await w.act('parent', rid, { action: 'withdraw', note: 'x' })).body.reason, 'unknown-field', 'a withdraw carrying figures');
   eq((await w.act('parent', rid, { action: 'delete' })).body.reason, 'action', 'an unknown action');
   // An accept names the figures the leader saw; the family's edit a moment earlier wins.
-  const stale = await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 });
+  const stale = await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([stale.status, stale.body.error, stale.body.status], [409, 'report-moved', 'submitted'], 'accepting figures the report no longer has');
   eq((await w.act('editor', rid, { action: 'accept' })).body.reason, 'te-cents', 'an accept without figures');
   eq((await w.act('editor', rid, { action: 'return' })).body.reason, 'review-note', 'sending back without a reason');
   eq((await w.act('editor', rid, { action: 'return', reviewNote: '   ' })).body.reason, 'review-note', 'a blank reason');
   // A leader's own report: another leader accepts it, never themselves.
   const mine = (await w.report('editor', { blockId: 'b2' })).body.report.id;
-  const self = await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500 });
+  const self = await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([self.status, self.body.error], [409, 'same-person'], 'an editor accepting their own report');
   eq(w.one('SELECT status FROM shift_reports WHERE id = ?', mine).status, 'submitted', 'their own report after the refusal');
-  const other = await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, reviewNote: 'Checked with the box' });
+  const other = await w.act('owner', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true, reviewNote: 'Checked with the box' });
   eq([other.status, other.body.report.status, other.body.report.reviewedByName, other.body.report.reviewedByUid, other.body.report.submittedByUid],
     [200, 'accepted', 'Test owner', 'uid-owner', 'uid-editor'], 'another leader accepts it');
   // After an accept nothing but a leader's return moves it.
   eq((await w.act('editor', mine, { action: 'withdraw' })).status, 409, 'the sender withdrawing an accepted report');
   eq((await w.act('editor', mine, { action: 'edit', teCents: 1, cashCents: 1, attest: true })).status, 409, 'the sender editing an accepted report');
-  eq((await w.act('admin2', mine, { action: 'accept', teCents: 12345, cashCents: 2500 })).status, 409, 'accepting twice');
+  eq((await w.act('admin2', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 409, 'accepting twice');
   eq((await w.act('parent', rid, { action: 'withdraw' })).body.report.status, 'withdrawn', 'the parent withdraws theirs');
   eq((await w.act('parent', rid, { action: 'withdraw' })).body.error, 'report-moved', 'withdrawing twice');
   eq((await w.act('editor', rid, { action: 'return', reviewNote: 'x' })).body.status, 'withdrawn', 'sending back a withdrawn report');
@@ -15693,7 +15693,7 @@ atest('api shift reports: every change leaves one audit row, in the same batch, 
   const w = await srWorld();
   const rid = (await w.report('parent')).body.report.id;
   await w.act('parent', rid, { action: 'edit', teCents: 200, cashCents: 300, attest: true });
-  await w.act('editor', rid, { action: 'accept', teCents: 200, cashCents: 300 });
+  await w.act('editor', rid, { action: 'accept', teCents: 200, cashCents: 300, collected: true });
   await w.act('owner', rid, { action: 'return', reviewNote: 'Wrong block' });
   const rid2 = (await w.report('parent', { teCents: 5, cashCents: 6 })).body.report.id;
   await w.act('parent', rid2, { action: 'withdraw' });
@@ -15705,12 +15705,14 @@ atest('api shift reports: every change leaves one audit row, in the same batch, 
   eq(w.sql("SELECT uid, action, detail FROM audit WHERE action LIKE 'shift.%' ORDER BY id").map((r) => [r.uid, r.action, JSON.parse(r.detail)]), [
     ['uid-parent', 'shift.report', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 12345, cashCents: 2500, needsConfirm: false }],
     ['uid-parent', 'shift.report.edit', { report: rid, teCents: 200, cashCents: 300, confirmationCleared: false }],
-    ['uid-editor', 'shift.accept', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 200, cashCents: 300, submittedBy: 'uid-parent' }],
-    ['uid-owner', 'shift.return', { report: rid, sfId: 'sfPast', blockId: 'b1', from: 'accepted' }],
+    ['uid-editor', 'shift.accept', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 200, cashCents: 300, submittedBy: 'uid-parent',
+      submittedByName: 'Test parent', reviewerName: 'Test editor', reviewNote: '', collected: true }],
+    ['uid-owner', 'shift.return', { report: rid, sfId: 'sfPast', blockId: 'b1', from: 'accepted', reason: 'Wrong block', reviewerName: 'Test owner' }],
     ['uid-parent', 'shift.report', { report: rid2, sfId: 'sfPast', blockId: 'b1', teCents: 5, cashCents: 6, needsConfirm: false }],
     ['uid-parent', 'shift.report.withdraw', { report: rid2 }]
   ], 'the audit trail');
-  ok(!/Counted at the table|Test parent/.test(w.sql("SELECT detail FROM audit WHERE action LIKE 'shift.%'").map((r) => r.detail).join()),
+  // Treasurer review C9: the leaders-only audit names the adults (sender, reviewer); never the family's own note.
+  ok(!/Counted at the table/.test(w.sql("SELECT detail FROM audit WHERE action LIKE 'shift.%'").map((r) => r.detail).join()),
     'an audit row holds a note or a name');
   // The audit insert is in the write's own batch, and conditioned on that write's stamp.
   const src = readFileSync(join(ROOT, 'functions/api/pack/[id]/shift-reports/[rid].js'), 'utf8') +
@@ -15728,14 +15730,14 @@ atest('api shift reports: a parent reads their own in full and only the status o
   await w.report('newbie', { blockId: 'b3', teCents: 55555, cashCents: 1111 });
   const old = (await w.report('newbie', { blockId: 'b4', teCents: 44444, cashCents: 2222 })).body.report.id;
   await w.act('newbie', old, { action: 'withdraw' });
-  await w.act('editor', theirs, { action: 'accept', teCents: 77777, cashCents: 4321 });
-  await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500, reviewNote: 'Thanks!' });
+  await w.act('editor', theirs, { action: 'accept', teCents: 77777, cashCents: 4321, collected: true });
+  await w.act('editor', mine, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true, reviewNote: 'Thanks!' });
   const p = await w.reports('parent');
   eq(p.status, 200, 'a parent\'s GET');
   eq(p.body.reports.length, 1, 'a parent sees one full report: their own');
   const own = p.body.reports[0];
   eq([own.id, own.status, own.mine, own.teCents, own.reviewedByName, own.reviewNote, own.submittedByName],
-    [mine, 'accepted', true, 12345, 'Sam', 'Thanks!', 'Test parent'], 'their own report, with the leader\'s first name only');
+    [mine, 'accepted', true, 12345, 'Sam', '', 'Test parent'], 'their own report, with the leader\'s first name only, and not the accept\'s note');
   ok(!('reviewedByUid' in own) && !('submittedByUid' in own) && !('stamp' in own), 'a parent\'s copy carries account ids or the stamp');
   eq(p.body.others.sort((a, b) => a.blockId < b.blockId ? -1 : 1), [
     { sfId: 'sfPast', blockId: 'b2', status: 'accepted' }, { sfId: 'sfPast', blockId: 'b3', status: 'submitted' },
@@ -15769,7 +15771,7 @@ atest('api shift reports: two changes at once — exactly one wins, and only the
     w = await srWorld();
     rid = (await w.report('parent')).body.report.id;
     holdBatches(w, 2, reverse);
-    [a, b] = await Promise.all([w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 }),
+    [a, b] = await Promise.all([w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true }),
       w.act('owner', rid, { action: 'return', reviewNote: 'Recount' })]);
     eq([a.status, b.status].sort(), [200, 409], 'accept and send-back at once (' + reverse + '): ' + a.text + ' / ' + b.text);
     eq((a.status === 409 ? a : b).body.error, 'report-moved', 'the loser is told it moved');
@@ -15780,7 +15782,7 @@ atest('api shift reports: two changes at once — exactly one wins, and only the
   w = await srWorld();
   rid = (await w.report('parent')).body.report.id;
   holdBatches(w, 2);
-  [a, b] = await Promise.all([w.act('parent', rid, { action: 'withdraw' }), w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 })]);
+  [a, b] = await Promise.all([w.act('parent', rid, { action: 'withdraw' }), w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
   eq([a.status, b.status].sort(), [200, 409], 'withdraw and accept at once');
   eq(w.sql("SELECT action FROM audit WHERE action IN ('shift.accept', 'shift.report.withdraw')").map((r) => r.action),
     [a.status === 200 ? 'shift.report.withdraw' : 'shift.accept'], 'only the winner is audited');
@@ -15790,7 +15792,7 @@ atest('api shift reports: two changes at once — exactly one wins, and only the
   rid = (await w.report('parent')).body.report.id;
   holdBatches(w, 2);
   [a, b] = await Promise.all([w.act('parent', rid, { action: 'edit', teCents: 1, cashCents: 2, attest: true }),
-    w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 })]);
+    w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })]);
   eq([a.status, b.status].sort(), [200, 409], 'edit and accept at once');
   // Whoever won, an accepted report holds exactly the figures the leader named.
   eq(w.one('SELECT status, te_cents FROM shift_reports WHERE id = ?', rid),
@@ -15833,7 +15835,8 @@ atest('api shift reports: the table itself refuses what the rules refuse', async
   ok(ins({ status: 'approved' }), 'a status that is not one of the four');
   ok(ins({ status: 'accepted' }), 'accepted with no reviewer');
   ok(ins({ status: 'accepted', reviewed_by_uid: 'uid-parent', reviewed_by_name: 'P', reviewed_at: 2 }), 'accepted by the person who sent it');
-  ok(!ins({ status: 'accepted', reviewed_by_uid: 'uid-owner', reviewed_by_name: 'O', reviewed_at: 2 }), 'accepted by someone else');
+  ok(!ins({ status: 'accepted', reviewed_by_uid: 'uid-owner', reviewed_by_name: 'O', reviewed_at: 2, accepted_by_uid: 'uid-owner', accepted_at: 2,
+    verified_by_leader: 1 }), 'accepted by someone else, who collected the cash');
   ok(ins({ status: 'returned' }), 'returned with no reviewer');
   ok(ins({ pack_id: 'no-such-pack' }), 'a report for no pack');
   ok(ins({ sf_id: '' }), 'no storefront id');
@@ -15978,6 +15981,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srMine', 'srReplaces', 'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback',
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
+  'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf',
   'ledgerActor', 'ledgerActorName',
   ...FORMAT_GATE_FNS];
 const CLIENT_SRC = CLIENT_FNS.map(decl).join('\n');
@@ -17371,7 +17375,7 @@ test('shift totals: every refusal the server can give has words a family can act
   const reasons = new Set([...rules.matchAll(/return '([a-z-]+)';/g), ...server.matchAll(/badRequest\('([a-z-]+)'\)/g)].map((m) => m[1]));
   ['open', 'accepted', 'report-moved'].forEach((r) => reasons.add(r));
   // Asked of a well-formed page, these only follow a bug, a stale page, or a leader's action.
-  const generic = ['sf-id', 'block-id', 'unknown-field', 'action', 'review-note', 'same-person', 'override'];
+  const generic = ['sf-id', 'block-id', 'unknown-field', 'action', 'review-note', 'same-person', 'override', 'figures', 'collected'];
   ok(reasons.size >= 14, 'the reasons found: ' + [...reasons]);
   for (const r of reasons) {
     const m = say({ code: 'invalid-argument', reason: r });
@@ -17530,7 +17534,10 @@ function srLeaderCtx(o) {
        'leaderReportsOn', 'canReviewReports', 'srReports', 'srReport', 'srWaiting', 'srBlockOf', 'srWhen', 'srMine', 'srReplaces',
        'LEADER_SR_SAY', 'leaderSrMessage', 'srNotNow', 'renderShiftReportCard', 'renderBlockReportLine', 'renderShiftReportsBanner',
        'srWaitingOn', 'acceptShiftReport', 'srLanded', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'shiftReportsAfterPush',
-       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout'].map(decl).join('\n')}`, ctx);
+       'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
+       'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
+       'blockCashCheck', 'blocksInDayOrder'].map(decl).join('\n')}
+    function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
   const get = (js) => JSON.parse(JSON.stringify(run(js) === undefined ? null : run(js)));
   // The save landed: the server's copy is this page's copy.
@@ -17544,12 +17551,15 @@ const srRep = (over) => Object.assign({ id: 'rep-1', sfId: 'sf1', blockId: 'b1',
 
 atest('shift reports S-3: accepting writes the block, the scouts get their split, and the report is signed off only once the save has landed', async () => {
   const L = srLeaderCtx({ reports: [srRep()] });
-  L.run("acceptShiftReport('rep-1', false)");
+  L.run("acceptShiftReport('rep-1', { collected: true })");
   const b = L.block('b1');
   eq([b.salesCents, b.donationsCents, b.cashCountedBy, b.cashVerifiedBy, b.reportId, b.reportFrom],
     [12345, 2500, 'Nora Newfamily', 'Sam Leader', 'rep-1', 'Nora Newfamily'], 'the block after the accept');
+  ok(typeof b.reportPending.at === 'number' && Math.abs(b.reportPending.at - Date.now()) < 60000, 'the accept is not stamped with when it was made');
+  delete b.reportPending.at;
   eq(b.reportPending, { by: 'uid-ed', te: 12345, cash: 2500, was: { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '',
-    reportApprovedBy: '', reportConfirmedBy: '', reportOverride: false }, override: false, note: '' }, 'what the accept keeps to undo itself');
+    reportApprovedBy: '', reportConfirmedBy: '', reportOverride: '', reportOverrideNote: '', reportCollected: false, reportReturned: null },
+    wrote: { counted: 'Nora Newfamily', verified: 'Sam Leader' }, override: false, note: '', collected: true }, 'what the accept keeps to undo itself');
   eq(L.get('commits'), 1, 'the accept saves the block');
   // The scouts' credit is the ordinary split, weighted 1:2.
   eq(L.get("blockShares(state.storefronts[0].blocks[0]).map(function (s) { return [s.scoutId, s.sales, s.don]; })"),
@@ -17560,38 +17570,39 @@ atest('shift reports S-3: accepting writes the block, the scouts get their split
   L.landed();
   L.run('shiftReportsAfterPush()');
   L.run('shiftReportsReconcile()');   // twice: one PATCH out at a time
-  eq(L.get('patches'), [{ rid: 'rep-1', body: { action: 'accept', teCents: 12345, cashCents: 2500 } }], 'the PATCH names exactly the figures shown');
+  eq(L.get('patches'), [{ rid: 'rep-1', body: { action: 'accept', teCents: 12345, cashCents: 2500, collected: true } }], 'the PATCH names exactly the figures shown');
   await L.answer(0);
   eq([L.block('b1').reportPending, L.block('b1').salesCents, L.get('commits'), L.get('loads')], [undefined, 12345, 2, 1], 'signed off: the marker goes, the figures stay');
   // An email for a display name never lands in the verifier.
   const E = srLeaderCtx({ reports: [srRep()], name: 'sam@example.com' });
-  E.run("acceptShiftReport('rep-1', false)");
+  E.run("acceptShiftReport('rep-1', { collected: true })");
   eq(E.block('b1').cashVerifiedBy, 'Sam Leader', 'the verifier, from the leader record, not the email');
   ok(E.block('b1').cashVerifiedBy.indexOf('@') === -1, 'an email as the verifier');
 });
 
 test('shift reports S-3: a block that already holds different figures asks first, old against new', () => {
   const L = srLeaderCtx({ reports: [srRep({ id: 'rep-2', blockId: 'b2', teCents: 6000, cashCents: 700 })] });
-  L.run("acceptShiftReport('rep-2', false)");
+  L.run("acceptShiftReport('rep-2', { collected: true })");
   eq([L.get('ui.srConfirm'), L.block('b2').salesCents, L.get('commits')], ['rep-2', 5000, 0], 'the first tap only asks');
   const card = L.run("renderShiftReportCard(srReport('rep-2'), srBlockOf(srReport('rep-2')))");
   ok(/This block already has figures/.test(card) && /<td>Trail’s End<\/td><td class="num">\$50\.00<\/td><td class="num">\$60\.00<\/td>/.test(card) &&
     /<td>Cash donations<\/td><td class="num">\$0\.00<\/td><td class="num">\$7\.00<\/td>/.test(card), 'old against new');
-  ok(/data-act="sr-accept-confirm" data-rid="rep-2">Replace and accept</.test(card), 'no way to confirm');
-  L.run("leaderShiftReportAct('sr-accept-confirm', { dataset: { rid: 'rep-2' } })");
+  ok(/data-act="sr-accept-confirm" data-rid="rep-2" data-collected="1">Replace and accept</.test(card), 'no way to confirm');
+  L.run("leaderShiftReportAct('sr-accept-confirm', { dataset: { rid: 'rep-2', collected: '1' } })");
   eq([L.block('b2').salesCents, L.block('b2').donationsCents, L.block('b2').reportPending.was.salesCents, L.block('b2').reportPending.was.cashCountedBy],
     [6000, 700, 5000, 'Jo'], 'replaced, with the old figures kept to undo');
   // The same figures, or an empty block: nothing to confirm.
   const S = srLeaderCtx({ reports: [srRep({ id: 'rep-3', blockId: 'b2', teCents: 5000, cashCents: 0 })] });
-  S.run("acceptShiftReport('rep-3', false)");
+  S.run("acceptShiftReport('rep-3', { collected: true })");
   eq([S.get('ui.srConfirm'), S.get('commits')], [null, 1], 'figures that match');
   const Z = srLeaderCtx({ reports: [srRep()] });
-  Z.run("acceptShiftReport('rep-1', false)");
+  Z.run("acceptShiftReport('rep-1', { collected: true })");
   eq([Z.get('ui.srConfirm'), Z.get('commits')], [null, 1], 'an empty block');
 });
 
 test('shift reports S-3: an accept the page lost is finished on the next load — by the leader who made it, and only once its save is on the server', () => {
-  const pend = (by) => ({ by, te: 12345, cash: 2500, was: { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '' } });
+  const pend = (by) => ({ by, at: Date.now(), te: 12345, cash: 2500, collected: true,
+    was: { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '' } });
   const st = (by) => ({ scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
     { id: 'b1', label: 'Block 1', assignments: [], salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Nora Newfamily', cashVerifiedBy: 'Sam Leader',
       reportId: 'rep-1', reportFrom: 'Nora Newfamily', reportPending: pend(by) }] }] });
@@ -17600,12 +17611,12 @@ test('shift reports S-3: an accept the page lost is finished on the next load �
   eq(L.get('patches.length'), 0, 'retried before the server had the block');
   L.landed();
   L.run('shiftReportsReconcile()');
-  eq(L.get('patches'), [{ rid: 'rep-1', body: { action: 'accept', teCents: 12345, cashCents: 2500 } }], 'retried with the block’s figures');
+  eq(L.get('patches'), [{ rid: 'rep-1', body: { action: 'accept', teCents: 12345, cashCents: 2500, collected: true } }], 'retried with the block’s figures');
   const O = srLeaderCtx({ reports: [srRep()], state: st('uid-someone-else') });
   O.landed();
   O.run('shiftReportsReconcile()');
   eq([O.get('patches.length'), O.block('b1').reportPending.by], [0, 'uid-someone-else'], 'another leader’s accept, finished or undone here');
-  ok(/waiting for the save to reach the server/.test(O.run('renderBlockReportLine(state.storefronts[0].blocks[0])')), 'the block does not say it is mid-accept');
+  ok(/Saving… the report is marked accepted once the save reaches the server\./.test(O.run('renderBlockReportLine(state.storefronts[0].blocks[0])')), 'the block does not say it is mid-accept');
   // Already accepted (this account's other device got there): settled, not sent again.
   const A = srLeaderCtx({ reports: [srRep({ status: 'accepted', reviewedByUid: 'uid-ed' })], state: st('uid-ed') });
   A.landed();
@@ -17617,7 +17628,7 @@ atest('shift reports S-3: each refusal puts the block back as it was, and a serv
   // Accept on b2 (5000 counted by Jo, verified by Lee), then the refusal.
   const setup = (rep) => {
     const L = srLeaderCtx({ reports: [rep || srRep({ id: 'rep-2', blockId: 'b2', teCents: 6000, cashCents: 700 })] });
-    L.run("acceptShiftReport('rep-2', true)");
+    L.run("acceptShiftReport('rep-2', { collected: true, replaceOk: true })");
     L.landed();
     return L;
   };
@@ -17674,17 +17685,20 @@ test('shift reports S-3: a viewer reads the card with no buttons, and the sender
   const card = V.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
   ok(/Nora Newfamily<\/strong> sent these totals/.test(card) && /\$123\.45/.test(card) && /\$25\.00/.test(card) && /“Counted with Jo”/.test(card), 'the card’s content');
   ok(!/<button|<form/.test(card) && /An admin or editor accepts or sends back shift reports\./.test(card), 'a viewer’s card has buttons');
-  V.run("acceptShiftReport('rep-1', true); leaderShiftReportAct('sr-return-open', { dataset: { rid: 'rep-1' } })");
+  V.run("acceptShiftReport('rep-1', { collected: true, replaceOk: true }); leaderShiftReportAct('sr-return-open', { dataset: { rid: 'rep-1' } })");
   eq([V.block('b1').salesCents, V.get('commits'), V.get('ui.srReturn')], [0, 0, null], 'a viewer accepted or opened a send-back');
   ok(/<p class="eyebrow"[^>]*>Shift report from a family<\/p>/.test(card), 'the card’s heading');
   const E = srLeaderCtx({ reports: [srRep()] });
   const ed = E.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
-  ok(/data-act="sr-accept" data-rid="rep-1">Accept and sign as verifier</.test(ed) && /data-act="sr-return-open" data-rid="rep-1">Send back</.test(ed), 'an editor’s buttons');
+  ok(/data-act="sr-accept-collected" data-rid="rep-1">I collected and counted this cash — accept</.test(ed) &&
+    /data-act="sr-override-open" data-rid="rep-1">Accept without collecting it</.test(ed) && /data-act="sr-return-open" data-rid="rep-1">Send back</.test(ed), 'an editor’s buttons');
+  ok(/Check the Trail’s End amount against this shift in the Trail’s End unit dashboard before accepting\./.test(ed) &&
+    /Run the Trail’s End shift import first if sign-ups changed in the app\. Once money is on the block, the import won’t change who’s on it\./.test(ed), 'the checks before accepting');
   // Their own report: no Accept, said why; the server refuses it anyway.
   const M = srLeaderCtx({ reports: [srRep({ submittedByUid: 'uid-ed', submittedByName: 'Sam Leader', mine: true })] });
   const own = M.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
   ok(!/sr-accept/.test(own) && /You sent this report, so a second adult has to accept it\./.test(own), 'the sender’s own card');
-  M.run("acceptShiftReport('rep-1', true)");
+  M.run("acceptShiftReport('rep-1', { collected: true, replaceOk: true })");
   eq([M.block('b1').salesCents, M.get('commits'), M.get('toasts')], [0, 0, ['You sent this report, so a second adult has to accept it.']], 'the sender accepting');
 });
 
@@ -17785,7 +17799,7 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   eq(ed.get("srWaiting().map(function (r) { return r.id; })"), [r1], 'the waiting report');
   // Accept: the block first, the save, then the PATCH.
   ed.reset();
-  ed.run(`acceptShiftReport('${r1}', false)`);
+  ed.run(`acceptShiftReport('${r1}', { collected: true })`);
   await settle([ed], 1200);
   await settle([ed], 1200);
   const order = ed.log.filter((l) => /^PUT \/P$|^PATCH \/P\/shift-reports/.test(l));
@@ -17801,7 +17815,7 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   await settle([ed], 1200);
   ed.intercept = async (method, path) => (method === 'PATCH'
     ? new Response(JSON.stringify({ error: 'unavailable', code: 'unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } }) : undefined);
-  ed.run(`acceptShiftReport('${r2}', false)`);
+  ed.run(`acceptShiftReport('${r2}', { collected: true })`);
   await settle([ed], 1200);
   await settle([ed], 1200);
   eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r2).status, server()[1].reportPending && server()[1].reportPending.by], ['submitted', 'uid-editor'],
@@ -17815,7 +17829,7 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   const r3 = await send('parent', 'b3', 7000, 0);
   ed2.run('loadShiftReports()');
   await settle([ed2], 1200);
-  ed2.run(`acceptShiftReport('${r3}', true)`);
+  ed2.run(`acceptShiftReport('${r3}', { collected: true, replaceOk: true })`);
   eq(ed2.get("state.storefronts[0].blocks[2].salesCents"), 7000, 'accepted over the hand-entered figures');
   eq((await w.call('parent', 'PATCH', 'shiftReport', { rid: r3 }, { body: { action: 'withdraw' } })).status, 200, 'the family withdraws');
   await settle([ed2], 1200);
@@ -17829,14 +17843,14 @@ atest('shift reports S-3: a leader’s page accepts a family’s report against 
   const r4 = await send('editor', 'b3', 1, 1);
   ed2.run('loadShiftReports()');
   await settle([ed2], 1200);
-  ed2.run(`acceptShiftReport('${r4}', true)`);
+  ed2.run(`acceptShiftReport('${r4}', { collected: true, replaceOk: true })`);
   await settle([ed2], 1200);
   eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r4).status, ed2.get('state.storefronts[0].blocks[2].salesCents')], ['submitted', 900], 'a leader accepting their own');
   // A viewer's page reads every report and changes nothing.
   const vw = await (await apiClient(w, 'viewer', { state: JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json) })).start(1200);
   await settle([vw], 1200);
   ok(vw.get('srReports().length') >= 4 && vw.get('canReviewReports()') === false, 'the viewer’s page');
-  vw.run(`acceptShiftReport('${r4}', true)`);
+  vw.run(`acceptShiftReport('${r4}', { collected: true, replaceOk: true })`);
   await settle([vw], 1200);
   eq([w.one('SELECT status FROM shift_reports WHERE id = ?', r4).status, vw.log.filter((l) => /^PUT|^PATCH/.test(l)).length], ['submitted', 0], 'a viewer accepted');
   // An admin previewing the parent app sends nothing.
@@ -17882,7 +17896,11 @@ async function s4World() {
   w.send = async (who, blockId, over) => w.call(who, 'POST', 'shiftReports', null,
     { body: Object.assign({ sfId: 'sf1', blockId, teCents: 12345, cashCents: 2500, note: 'Counted with the Bo family', attest: true }, over || {}) });
   w.act = (who, rid, body) => w.call(who, 'PATCH', 'shiftReport', { rid }, { body });
-  w.confirm = (who, rid) => w.act(who, rid, { action: 'confirm', attest: true });
+  // A confirm names the figures and the version it was shown (security review 1): here, the row's.
+  w.confirm = (who, rid, over) => {
+    const row = w.one('SELECT te_cents, cash_cents, updated_at FROM shift_reports WHERE id = ?', rid) || { te_cents: 0, cash_cents: 0, updated_at: 0 };
+    return w.act(who, rid, Object.assign({ action: 'confirm', attest: true, teCents: row.te_cents, cashCents: row.cash_cents, updatedAt: row.updated_at }, over || {}));
+  };
   return w;
 }
 
@@ -17969,7 +17987,7 @@ atest('S-4: no pack record, or no such storefront or block in it, and nobody con
 atest('S-4: a leader accepts a confirmed report, or an unconfirmed one only with a written reason', async () => {
   const w = await s4World();
   const rid = (await w.send('parent', 'b1')).body.report.id;
-  const accept = (over) => w.act('editor', rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500 }, over || {}));
+  const accept = (over) => w.act('editor', rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500, collected: true }, over || {}));
   eq((await accept()).body.error, 'needs-confirm', 'unconfirmed, no override');
   eq((await accept({ override: true })).body.reason, 'review-note', 'an override with no reason');
   eq((await accept({ override: true, reviewNote: '   ' })).body.reason, 'review-note', 'an override with a blank reason');
@@ -17981,7 +17999,7 @@ atest('S-4: a leader accepts a confirmed report, or an unconfirmed one only with
   // Confirmed: a plain accept, naming the confirmer in the audit.
   const r2 = (await w.send('parent', 'b5')).body.report.id;
   await w.confirm('newbie', r2);
-  const a2 = await w.act('editor', r2, { action: 'accept', teCents: 12345, cashCents: 2500 });
+  const a2 = await w.act('editor', r2, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
   eq([a2.status, a2.body.report.overridden, JSON.parse(w.audit('shift.accept')[0].detail).confirmedBy], [200, false, 'uid-newbie'], 'a confirmed accept');
 });
 
@@ -17992,7 +18010,7 @@ atest('S-4: the sender’s edit clears a confirmation, and a confirm racing an e
   const ed = await w.act('parent', rid, { action: 'edit', teCents: 13000, cashCents: 2500, attest: true });
   eq([ed.body.report.confirmed, ed.body.report.confirmedByName, JSON.parse(w.audit('shift.report.edit')[0].detail).confirmationCleared], [false, null, true],
     'the edit cleared the confirmation');
-  eq((await w.act('editor', rid, { action: 'accept', teCents: 13000, cashCents: 2500 })).body.error, 'needs-confirm', 'an accept after the edit');
+  eq((await w.act('editor', rid, { action: 'accept', teCents: 13000, cashCents: 2500, collected: true })).body.error, 'needs-confirm', 'an accept after the edit');
   for (const reverse of [false, true]) {
     const v = await s4World();
     const r = (await v.send('parent', 'b1')).body.report.id;
@@ -18010,7 +18028,8 @@ atest('S-4: a parent who may confirm sees the figures to check — only they, on
   const view = async (who) => (await w.call(who, 'GET', 'shiftReports'));
   const nb = await view('newbie');
   eq(nb.body.others.find((o) => o.blockId === 'b1'), { sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: true,
-    id: rid, teCents: 12345, cashCents: 2500, note: 'Two twenties from the Bo family', submittedByName: 'Test' }, 'the second parent’s entry');
+    id: rid, teCents: 12345, cashCents: 2500, note: 'Two twenties from the Bo family', submittedByName: 'Test',
+    updatedAt: w.one('SELECT updated_at FROM shift_reports WHERE id = ?', rid).updated_at }, 'the second parent’s entry');
   for (const who of ['other', 'loose']) {
     const g = await view(who);
     eq(g.body.others.find((o) => o.blockId === 'b1'), { sfId: 'sf1', blockId: 'b1', status: 'submitted', needsConfirm: true, confirmed: false, canConfirm: false },
@@ -18051,8 +18070,12 @@ atest('S-4: the table refuses a sender confirming their own, and an accept a sec
   ok(ins('c', 'needs_confirm, confirmed_by_uid', ['submitted', 1, 'uid-n']), 'a confirmation with no time');
   ok(ins('d', 'needs_confirm, reviewed_by_uid, reviewed_at', ['accepted', 1, 'uid-l', 2]), 'accepted, unconfirmed, no override');
   ok(ins('e', 'needs_confirm, reviewed_by_uid, reviewed_at, overridden', ['accepted', 1, 'uid-l', 2, 1]), 'an override with no reason');
-  ok(!ins('f', 'needs_confirm, reviewed_by_uid, reviewed_at, overridden, review_note', ['accepted', 1, 'uid-l', 2, 1, 'Counted with Pat']), 'an override with a reason');
-  ok(!ins('g', 'needs_confirm, reviewed_by_uid, reviewed_at, confirmed_by_uid, confirmed_at', ['accepted', 1, 'uid-l', 2, 'uid-n', 2]), 'a confirmed accept');
+  ok(!ins('f', 'needs_confirm, reviewed_by_uid, reviewed_at, overridden, accepted_by_uid, accepted_at, accept_note', ['accepted', 1, 'uid-l', 2, 1, 'uid-l', 2, 'Counted with Pat']),
+    'an override with a reason');
+  ok(ins('f2', 'needs_confirm, reviewed_by_uid, reviewed_at, overridden, review_note, accepted_by_uid, accepted_at', ['accepted', 1, 'uid-l', 2, 1, 'Counted with Pat', 'uid-l', 2]),
+    'an override whose reason is only in review_note (a later send-back can change that)');
+  ok(!ins('g', 'needs_confirm, reviewed_by_uid, reviewed_at, confirmed_by_uid, confirmed_at, accepted_by_uid, accepted_at', ['accepted', 1, 'uid-l', 2, 'uid-n', 2, 'uid-l', 2]),
+    'a confirmed accept');
   ok(ins('h', 'needs_confirm', ['submitted', 2]), 'needs_confirm that is not 0 or 1');
 });
 
@@ -18080,7 +18103,8 @@ test('S-4: the family page shows the second parent’s step, and the figures and
   const pa = /var PARENT_ACTS = \[([^\]]*)\]/.exec(SCRIPT)[1];
   ok(pa.indexOf("'shift-report-confirm-open'") >= 0, 'Confirm is not a parent action');
   ok(!/\bstate\b|\bsave\(|\bcommit\(/.test(codeOnly(slice('shiftConfirmSubmit'))) &&
-    /patchShiftReport\(sync\.docId, cf\.rid, \{ action: 'confirm', attest: true \}\)/.test(slice('shiftConfirmSubmit')), 'the confirm touches the pack record');
+    /patchShiftReport\(sync\.docId, cf\.rid, \{ action: 'confirm', attest: true, teCents: o\.teCents, cashCents: o\.cashCents,\s*updatedAt: o\.updatedAt \}\)/.test(slice('shiftConfirmSubmit')),
+    'the confirm does not name the figures it showed, or touches the pack record');
 });
 
 atest('S-4: the leader’s card says who signed, says when no other parent is linked, and accepting without a second parent needs a reason', async () => {
@@ -18088,42 +18112,44 @@ atest('S-4: the leader’s card says who signed, says when no other parent is li
   // b1 holds s1 and s2; in this pack nobody is linked.
   const L = srLeaderCtx({ reports: [needs()] });
   const card = L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
-  ok(/Only one parent signed\./.test(card) && /No other parent on this shift is linked to an account: link them on the Members card, or accept without one and say why\./.test(card),
+  ok(/Only one parent has signed\. Scouts from more than one family worked this shift, so a parent from another family needs to confirm before you accept\. If no one can, accept without one and say why\./.test(card) &&
+    /No parent from another family on this shift is linked to an account: link them on the Members card\./.test(card),
     'one signature, nobody to give the second');
   ok(/data-act="sr-override-open" data-rid="rep-1">Accept without a second parent</.test(card) && !/data-act="sr-accept"/.test(card), 'the override button');
   L.run("state.scouts[1].parentUids = ['uid-bo']");
-  ok(!/No other parent on this shift is linked/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'a linked parent on the shift');
-  L.run("acceptShiftReport('rep-1', false)");
+  ok(!/No parent from another family on this shift is linked/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'a linked parent on the shift');
+  L.run("acceptShiftReport('rep-1', { collected: true })");
   eq([L.get('ui.srOverride'), L.block('b1').salesCents], ['rep-1', 0], 'the accept asks for the reason first');
-  ok(/<form data-form="shift-report-override"[\s\S]*Why accept without a second parent\? This is kept with the report\./.test(
+  ok(/<form data-form="shift-report-override"[\s\S]*Why accept without a second parent\? This is kept with the report and the season’s record\./.test(
     L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'the reason form');
-  L.run("acceptShiftReport('rep-1', true, '  ')");
+  L.run("acceptShiftReport('rep-1', { replaceOk: true, reason: '  ' })");
   eq([L.block('b1').salesCents, L.get('toasts').pop()], [0, 'Say why you are accepting it without a second parent.'], 'a blank reason');
-  L.run("acceptShiftReport('rep-1', true, 'The other family left early')");
+  L.run("acceptShiftReport('rep-1', { replaceOk: true, reason: 'The other family left early' })");
   const b = L.block('b1');
   eq([b.salesCents, b.cashCountedBy, b.cashVerifiedBy, b.reportApprovedBy, b.reportConfirmedBy, b.reportOverride, b.reportPending.override, b.reportPending.note],
-    [12345, 'Nora Newfamily', 'Sam Leader', 'Sam Leader', '', true, true, 'The other family left early'], 'the block after an override');
+    [12345, 'Nora Newfamily', '', 'Sam Leader', '', 'second-parent', true, 'The other family left early'], 'the block after an override: nobody verified');
   L.landed();
   L.run('shiftReportsReconcile()');
   eq(L.get('patches')[0].body, { action: 'accept', teCents: 12345, cashCents: 2500, override: true, reviewNote: 'The other family left early' }, 'the override PATCH');
   await L.answer(0);
-  ok(/From Nora Newfamily’s report, accepted by Sam Leader without a second parent\./.test(L.run('renderBlockReportLine(state.storefronts[0].blocks[0])')), 'the overridden block’s line');
+  ok(/From Nora Newfamily’s report, accepted by Sam Leader without a second parent: “The other family left early”\./.test(L.run('renderBlockReportLine(state.storefronts[0].blocks[0])')),
+    'the overridden block’s line, with the reason');
   // Confirmed: counted by the sender, verified by the second parent, accepted by the leader.
   const C = srLeaderCtx({ reports: [needs({ confirmed: true, confirmedByName: 'Bo Parent' })] });
   const cc = C.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
-  ok(/Counted by Nora Newfamily · confirmed by Bo Parent/.test(cc) && /data-act="sr-accept" data-rid="rep-1">Accept and sign as verifier</.test(cc), 'a confirmed card');
-  C.run("acceptShiftReport('rep-1', false)");
+  ok(/Counted by Nora Newfamily · confirmed by Bo Parent/.test(cc) && /data-act="sr-accept" data-rid="rep-1">Accept totals</.test(cc), 'a confirmed card');
+  C.run("acceptShiftReport('rep-1', { collected: true })");
   const cb = C.block('b1');
-  eq([cb.cashCountedBy, cb.cashVerifiedBy, cb.reportApprovedBy, cb.reportConfirmedBy, cb.reportOverride], ['Nora Newfamily', 'Bo Parent', 'Sam Leader', 'Bo Parent', false],
+  eq([cb.cashCountedBy, cb.cashVerifiedBy, cb.reportApprovedBy, cb.reportConfirmedBy, cb.reportOverride], ['Nora Newfamily', 'Bo Parent', 'Sam Leader', 'Bo Parent', ''],
     'the block after a confirmed accept');
   C.landed();
   C.run('shiftReportsReconcile()');
-  eq(C.get('patches')[0].body, { action: 'accept', teCents: 12345, cashCents: 2500 }, 'a confirmed accept’s PATCH has no override');
+  eq(C.get('patches')[0].body, { action: 'accept', teCents: 12345, cashCents: 2500 }, 'a confirmed accept’s PATCH has no override, and no collecting');
   await C.answer(0);
   ok(/From Nora Newfamily’s report, confirmed by Bo Parent, accepted by Sam Leader\./.test(C.run('renderBlockReportLine(state.storefronts[0].blocks[0])')), 'the line');
   // A refused override puts the block back, names and all.
   const R = srLeaderCtx({ reports: [needs()] });
-  R.run("acceptShiftReport('rep-1', true, 'x'); sync.shiftReports.reports[0].status = 'withdrawn'; shiftReportsReconcile()");
+  R.run("acceptShiftReport('rep-1', { replaceOk: true, reason: 'x' }); sync.shiftReports.reports[0].status = 'withdrawn'; shiftReportsReconcile()");
   eq([R.block('b1').salesCents, R.block('b1').reportApprovedBy, R.block('b1').reportOverride], [0, undefined, undefined], 'rolled back');
 });
 
@@ -18159,7 +18185,7 @@ atest('S-4: end to end — two parents and a leader, and one parent and a leader
   const ed = pin(await apiClient(w, 'editor', { state: w.pack }));
   await ed.start(1200);
   await settle([ed], 1200);
-  ed.run(`acceptShiftReport('${rid}', false)`);
+  ed.run(`acceptShiftReport('${rid}', { collected: true })`);
   await settle([ed], 1200);
   await settle([ed], 1200);
   const server = () => JSON.parse(w.one('SELECT json FROM pack_state WHERE pack_id = ?', API_PACK).json).storefronts[0].blocks;
@@ -18171,25 +18197,310 @@ atest('S-4: end to end — two parents and a leader, and one parent and a leader
   const r5 = (await w.send('parent', 'b5', { teCents: 5000, cashCents: 0 })).body.report.id;
   ed.run('loadShiftReports()');
   await settle([ed], 1200);
-  ed.run(`acceptShiftReport('${r5}', false)`);
+  ed.run(`acceptShiftReport('${r5}', { collected: true })`);
   eq(ed.get('ui.srOverride'), r5, 'asked for the reason');
-  ed.run(`acceptShiftReport('${r5}', true, 'Only one family stayed to count')`);
+  ed.run(`acceptShiftReport('${r5}', { replaceOk: true, reason: 'Only one family stayed to count' })`);
   await settle([ed], 1200);
   await settle([ed], 1200);
   eq(w.one('SELECT status, overridden, review_note FROM shift_reports WHERE id = ?', r5), { status: 'accepted', overridden: 1, review_note: 'Only one family stayed to count' },
     'the override on the server');
   const b5 = server()[3];
-  eq([b5.salesCents, b5.cashCountedBy, b5.cashVerifiedBy, b5.reportOverride, b5.reportPending], [5000, 'Test parent', 'Test editor', true, undefined], 'the block after the override');
+  eq([b5.salesCents, b5.cashCountedBy, b5.cashVerifiedBy, b5.reportOverride, b5.reportOverrideNote, b5.reportPending],
+    [5000, 'Test parent', '', 'second-parent', 'Only one family stayed to count', undefined], 'the block after the override: nobody verified');
   eq(w.sql("SELECT action FROM audit WHERE action LIKE 'shift.%' ORDER BY id").map((r) => r.action),
     ['shift.report', 'shift.confirm', 'shift.accept', 'shift.report', 'shift.accept.override'], 'the audit trail');
   // A one-family shift needs nobody else.
   const r2 = (await w.send('newbie', 'b2', { teCents: 700, cashCents: 0 })).body.report.id;
   ed.run('loadShiftReports()');
   await settle([ed], 1200);
-  ed.run(`acceptShiftReport('${r2}', false)`);
+  ed.run(`acceptShiftReport('${r2}', { collected: true })`);
   await settle([ed], 1200);
   await settle([ed], 1200);
   eq(w.one('SELECT status, overridden FROM shift_reports WHERE id = ?', r2), { status: 'accepted', overridden: 0 }, 'a one-family shift');
+});
+
+/* ================================================================
+   Review round 1 (2026-10-01) — Keith's decisions and the security and treasurer fixes on the
+   server and the leaders' page. Made-up names and accounts throughout.
+   ================================================================ */
+
+// s4World, plus `spouse` (a second account of the sender's family, linked to s1) and the editor
+// linked as a parent of s2 (another family on b1), for the confirmer-may-not-accept rule.
+async function r1World() {
+  PEOPLE.spouse = PEOPLE.spouse || ['uid-spouse', 'spouse1@example.com'];
+  const w = await s4World();
+  w.db.raw.prepare("INSERT INTO members (pack_id, uid, role, name, email, join_code, added_at) VALUES (?, 'uid-spouse', 'parent', 'Test spouse', 'spouse1@example.com', NULL, 1)").run(API_PACK);
+  const st = JSON.parse(w.one('SELECT json FROM pack_state').json);
+  st.scouts[0].parentUids = ['uid-parent', 'uid-spouse'];
+  st.scouts[1].parentUids = ['uid-newbie', 'uid-editor'];
+  st.scouts[2].parentUids = ['uid-newbie', 'uid-editor'];
+  w.db.raw.prepare('UPDATE pack_state SET json = ?').run(JSON.stringify(st));
+  return w;
+}
+
+atest('round 1: the confirmer is from another family than the sender — never a spouse or second account of the same family', async () => {
+  const w = await r1World();
+  const rid = (await w.send('parent', 'b1')).body.report.id;
+  eq((await w.confirm('spouse', rid)).body.error, 'not-shift-parent', 'the sender’s spouse, linked to the same scout');
+  const g = await w.call('spouse', 'GET', 'shiftReports');
+  eq([g.body.others.find((o) => o.blockId === 'b1').canConfirm, g.text.indexOf('12345')], [false, -1], 'the spouse is offered the confirm');
+  eq((await w.confirm('newbie', rid)).status, 200, 'a parent from the other family');
+  // A sender linked to no scout: any linked parent on the shift but the sender.
+  const v = await r1World();
+  const r2 = (await v.send('loose', 'b1')).body.report.id;
+  eq((await v.confirm('parent', r2)).status, 200, 'a shift parent, where the sender is linked to nobody');
+  const after = (await v.call('newbie', 'GET', 'shiftReports')).body.others.find((o) => o.blockId === 'b1');
+  ok(!after.canConfirm && !('teCents' in after) && after.confirmed === true, 'once confirmed, nobody else is offered it or sent its figures');
+  // The rule itself.
+  const R = API.rules;
+  const pack = { scouts: [{ id: 'a', familyId: 'F', parentUids: ['u1', 'u2'] }, { id: 'b', familyId: 'F', parentUids: ['u3'] }, { id: 'c', parentUids: ['u4'] }],
+    storefronts: [{ id: 's', blocks: [{ id: 'k', assignments: [{ scoutId: 'a' }, { scoutId: 'b' }, { scoutId: 'c' }] }] }] };
+  eq(R.shiftConfirmers(pack, 's', 'k', 'u1'), ['u4'], 'siblings (a and b) are the sender’s family; only c’s parent confirms');
+  eq(R.shiftConfirmers(pack, 's', 'k', 'u4'), ['u1', 'u2', 'u3'], 'the other way round');
+  eq(R.shiftConfirmers(pack, 's', 'k', 'nobody'), ['u1', 'u2', 'u3', 'u4'], 'a sender linked to no scout');
+  eq(R.shiftConfirmers(pack, 's', 'gone', 'u1'), null, 'no such block');
+  ok(!/Open for the treasurer/.test(readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8')), 'rules.js still leaves the family question open');
+});
+
+atest('round 1: who verified the cash — the confirming parent, the leader who collected it, or nobody, with a reason', async () => {
+  const w = await r1World();
+  // One family (b2): the leader collected and counted it, or overrides with a reason.
+  const one = (await w.send('newbie', 'b2')).body.report.id;
+  const base = { action: 'accept', teCents: 12345, cashCents: 2500 };
+  eq((await w.act('owner', one, base)).body.error, 'not-collected', 'neither collected nor an override');
+  eq((await w.act('owner', one, Object.assign({ collected: 'yes' }, base))).body.reason, 'collected', 'collected that is not true or false');
+  eq((await w.act('owner', one, Object.assign({ override: true }, base))).body.reason, 'review-note', 'an override with no reason');
+  const col = await w.act('owner', one, Object.assign({ collected: true }, base));
+  eq([col.status, col.body.report.collected, col.body.report.overridden, col.body.report.acceptedByName, col.body.report.acceptNote],
+    [200, true, false, 'Test owner', ''], 'collected and counted by the accepting leader');
+  const b5 = (await w.send('other', 'b2', { teCents: 1, cashCents: 0 })).status;
+  eq(b5, 409, 'b2 is held');
+  // A one-family shift the leader did not collect: an override, its reason kept as the accept's note.
+  const v = await r1World();
+  const r2 = (await v.send('newbie', 'b2')).body.report.id;
+  const ov = await v.act('owner', r2, Object.assign({ override: true, reviewNote: 'Pat handed it to the treasurer' }, base));
+  eq([ov.status, ov.body.report.collected, ov.body.report.overridden, ov.body.report.acceptNote], [200, false, true, 'Pat handed it to the treasurer'], 'not collected');
+  eq(v.audit('shift.accept.override').map((a) => { const d = JSON.parse(a.detail); return [d.reason, d.collected, d.reviewerName, d.submittedByName]; }),
+    [['Pat handed it to the treasurer', false, 'Test owner', 'Test newbie']], 'audited as an override, with the reason and the names');
+  // Two families, confirmed: `collected` changes nothing; the confirmer is the verifier.
+  const r3 = (await v.send('parent', 'b1')).body.report.id;
+  await v.confirm('newbie', r3);
+  const c3 = await v.act('owner', r3, Object.assign({ collected: true }, base));
+  eq([c3.status, c3.body.report.collected, c3.body.report.confirmedByName], [200, false, 'Test newbie'], 'a confirmed two-family accept');
+  eq(JSON.parse(v.audit('shift.accept').pop().detail).confirmedByName, 'Test newbie', 'the confirmer’s name in the audit');
+  // The accept is recorded once: a later send-back leaves it.
+  await v.act('admin2', r3, { action: 'return', reviewNote: 'Recount' });
+  eq(v.one('SELECT status, accepted_by_uid, reviewed_by_uid, accept_note, review_note FROM shift_reports WHERE id = ?', r3),
+    { status: 'returned', accepted_by_uid: 'uid-owner', reviewed_by_uid: 'uid-admin2', accept_note: '', review_note: 'Recount' }, 'the accept outlives the send-back');
+  // The schema.
+  const refused = (sql, ...a) => { try { v.db.raw.prepare(sql).run(...a); return false; } catch (e) { return true; } };
+  const ins = (cols, vals) => refused('INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, submitted_by_uid, submitted_at, updated_at, status, stamp, ' +
+    cols + ") VALUES (lower(hex(randomblob(8))), ?, 'sf1', lower(hex(randomblob(8))), 1, 1, 'uid-p', 1, 1, 'accepted', 's', " + cols.split(',').map(() => '?').join(', ') + ')', API_PACK, ...vals);
+  const acc = 'reviewed_by_uid, reviewed_at, accepted_by_uid, accepted_at';
+  ok(ins(acc + ', needs_confirm', ['uid-l', 2, 'uid-l', 2, 0]), 'a one-family accept nobody collected, with no override');
+  ok(!ins(acc + ', needs_confirm, verified_by_leader', ['uid-l', 2, 'uid-l', 2, 0, 1]), 'a one-family accept the leader collected');
+  ok(ins(acc + ', needs_confirm, verified_by_leader, confirmed_by_uid, confirmed_at', ['uid-l', 2, 'uid-l', 2, 1, 1, 'uid-n', 2]), 'collected on a two-family shift');
+  ok(ins(acc + ', needs_confirm, confirmed_by_uid, confirmed_at', ['uid-l', 2, 'uid-n', 2, 1, 'uid-n', 2]), 'accepted by the confirmer');
+  ok(ins(acc + ', needs_confirm, verified_by_leader', ['uid-l', 2, 'uid-p', 2, 0, 1]), 'accepted by the sender');
+  ok(ins('reviewed_by_uid, reviewed_at, needs_confirm, verified_by_leader', ['uid-l', 2, 0, 1]), 'accepted with no accept record');
+  ok(!ins(acc + ', needs_confirm, overridden, accept_note', ['uid-l', 2, 'uid-l', 2, 0, 1, 'Not there']), 'an override with its reason');
+});
+
+atest('round 1: a leader who confirmed a report as a parent may not accept it', async () => {
+  const w = await r1World();
+  const rid = (await w.send('parent', 'b1')).body.report.id;
+  eq((await w.confirm('editor', rid)).status, 200, 'the editor confirms, as Bo’s parent');
+  const a = await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500 });
+  eq([a.status, a.body.error], [409, 'same-person'], 'the confirmer accepting');
+  eq((await w.act('owner', rid, { action: 'accept', teCents: 12345, cashCents: 2500 })).status, 200, 'another leader accepting');
+});
+
+atest('round 1: a confirm names the figures and version it was shown, and only within the window', async () => {
+  const w = await r1World();
+  const rid = (await w.send('parent', 'b1')).body.report.id;
+  eq((await w.confirm('newbie', rid, { teCents: 999 })).body.error, 'report-moved', 'figures other than the report’s');
+  eq((await w.confirm('newbie', rid, { updatedAt: 1 })).body.error, 'report-moved', 'an older version');
+  eq((await w.act('newbie', rid, { action: 'confirm', attest: true })).body.reason, 'figures', 'no figures at all');
+  // The sender edits between the second parent loading it and confirming: refused.
+  const row = w.one('SELECT te_cents, cash_cents, updated_at FROM shift_reports WHERE id = ?', rid);
+  await new Promise((r) => setTimeout(r, 3));
+  await w.act('parent', rid, { action: 'edit', teCents: 12345, cashCents: 2500, note: 'same figures, edited', attest: true });
+  eq((await w.act('newbie', rid, { action: 'confirm', attest: true, teCents: row.te_cents, cashCents: row.cash_cents, updatedAt: row.updated_at })).body.error,
+    'report-moved', 'a confirm of the version before an edit');
+  eq(w.audit('shift.confirm').length, 0, 'a refused confirm was audited');
+  // Out of the window, or off the published schedule.
+  const view = JSON.parse(JSON.stringify(w.view));
+  view.events[0].date = '2020-01-01';
+  w.db.raw.prepare('UPDATE parent_views SET payload = ?').run(JSON.stringify(view));
+  eq((await w.confirm('newbie', rid)).body.reason, 'too-old', 'a shift out of the window');
+  view.events = [];
+  w.db.raw.prepare('UPDATE parent_views SET payload = ?').run(JSON.stringify(view));
+  eq((await w.confirm('newbie', rid)).body.reason, 'not-in-view', 'a shift no longer published');
+  w.db.raw.prepare('UPDATE parent_views SET payload = ?').run(JSON.stringify(w.view));
+  const ok2 = await w.confirm('newbie', rid);
+  eq([ok2.status, JSON.parse(w.audit('shift.confirm')[0].detail).confirmerName], [200, 'Test newbie'], 'the confirm, with the confirmer named in the audit');
+});
+
+atest('round 1: one account has at most 3 reports waiting and 20 a day; a leader reads 400 days and everything still waiting', async () => {
+  const w = await r1World();
+  for (const b of ['b1', 'b2', 'b3']) eq((await w.send('parent', b)).status, 200, 'report on ' + b);
+  const four = await w.send('parent', 'b5');
+  eq([four.status, four.body.error, four.body.reason], [409, 'too-many-open', 'too-many-open'], 'a fourth waiting');
+  const day = await r1World();
+  const now = Date.now();
+  for (let i = 0; i < 20; i++) {
+    day.db.raw.prepare("INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, submitted_by_uid, submitted_at, updated_at, status, stamp) " +
+      "VALUES (?, ?, 'sf1', ?, 1, 1, 'uid-parent', ?, ?, 'withdrawn', 's')").run('old' + i, API_PACK, 'x' + i, now - 1000, now - 1000);
+  }
+  eq((await day.send('parent', 'b1')).body.reason, 'too-many-today', 'the twenty-first in a day');
+  eq((await day.send('newbie', 'b1')).status, 200, 'another account is not held by it');
+  // A leader's list: 400 days back, and anything still waiting.
+  const ld = await r1World();
+  const ins = (id, status, ago) => ld.db.raw.prepare("INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, submitted_by_uid, submitted_at, updated_at, " +
+    "status, stamp, reviewed_by_uid, reviewed_at, accepted_by_uid, accepted_at, verified_by_leader) VALUES (?, ?, 'sf1', ?, 1, 1, 'uid-parent', ?, ?, ?, 's', ?, ?, ?, ?, ?)")
+    .run(id, API_PACK, id, now - ago, now - ago, status, status === 'accepted' ? 'uid-owner' : null, status === 'accepted' ? 1 : null,
+      status === 'accepted' ? 'uid-owner' : null, status === 'accepted' ? 1 : null, status === 'accepted' ? 1 : 0);
+  ins('ancient', 'accepted', 401 * 86400000);
+  ins('lastyear', 'accepted', 300 * 86400000);
+  ins('forgotten', 'submitted', 500 * 86400000);
+  eq((await ld.call('owner', 'GET', 'shiftReports')).body.reports.map((r) => r.id).sort(), ['forgotten', 'lastyear'], 'the leader’s list');
+});
+
+atest('round 1: a parent’s list reads the view first and the pack record only when a confirm is in question', async () => {
+  const w = await r1World();
+  const reads = [];
+  const prep = w.db.prepare;
+  w.db.prepare = (sql) => { if (/FROM pack_state/.test(sql)) reads.push(sql); return prep(sql); };
+  await w.call('newbie', 'GET', 'shiftReports');
+  eq(reads.length, 0, 'no report waiting: the pack record read');
+  const rid = (await w.send('parent', 'b1')).body.report.id;
+  const view = JSON.parse(JSON.stringify(w.view));
+  view.events[0].date = '2020-01-01';
+  w.db.raw.prepare('UPDATE parent_views SET payload = ?').run(JSON.stringify(view));
+  await w.call('newbie', 'GET', 'shiftReports');
+  eq(reads.length, 0, 'the only one waiting is out of the window: the pack record read');
+  w.db.raw.prepare('UPDATE parent_views SET payload = ?').run(JSON.stringify(w.view));
+  const g = await w.call('newbie', 'GET', 'shiftReports');
+  eq([reads.length, g.body.others.find((o) => o.id === rid).canConfirm], [1, true], 'one in the window: read once');
+});
+
+test('round 1: the leader card’s buttons say who verifies the cash, and the confirmer is not offered Accept', () => {
+  const card = (rep, o) => { const L = srLeaderCtx(Object.assign({ reports: [rep] }, o || {})); return L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))"); };
+  const one = card(srRep());
+  ok(/>I collected and counted this cash — accept</.test(one) && />Accept without collecting it</.test(one) && !/>Accept totals</.test(one), 'one family');
+  const two = card(srRep({ needsConfirm: true, confirmed: true, confirmedByName: 'Bo Parent', confirmedByUid: 'uid-bo' }));
+  ok(/>Accept totals</.test(two) && !/collected and counted/.test(two), 'two families, confirmed');
+  const solo = card(srRep({ needsConfirm: true, confirmed: false }));
+  ok(/>Accept without a second parent</.test(solo) && !/>Accept totals</.test(solo), 'two families, one signature');
+  const mine = card(srRep({ needsConfirm: true, confirmed: true, confirmedByName: 'Sam Leader', confirmedByUid: 'uid-ed' }));
+  ok(/You confirmed this report as a parent, so another leader has to accept it\./.test(mine) && !/sr-accept/.test(mine), 'the leader who confirmed it');
+  const L = srLeaderCtx({ reports: [srRep({ needsConfirm: true, confirmed: true, confirmedByName: 'Sam Leader', confirmedByUid: 'uid-ed' })] });
+  L.run("acceptShiftReport('rep-1', {})");
+  eq([L.block('b1').salesCents, L.get('toasts')], [0, ['You confirmed this report as a parent, so another leader has to accept it.']], 'the confirmer accepting');
+  // Sign-ups changed since the report: now two families, no second parent was asked.
+  ok(/This shift now has scouts from more than one family, but the report was sent when it had one, so no second parent was asked to confirm it\./.test(one),
+    'b1 holds Ada and Bo, two families, and the report needed no second parent');
+  ok(!/now has scouts from more than one family/.test(card(srRep({ id: 'rep-1', blockId: 'b2' }))), 'b2 holds one scout');
+});
+
+atest('round 1: accepting a one-family shift without collecting it names nobody as verifier, and the block says why', async () => {
+  const L = srLeaderCtx({ reports: [srRep()] });
+  L.run("acceptShiftReport('rep-1', {})");
+  eq(L.get('ui.srOverride'), 'rep-1', 'asks for the reason');
+  ok(/Why accept without collecting it\? Nobody will be named as having verified the cash\. This is kept with the report and the season’s record\./.test(
+    L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")) &&
+    />Accept without collecting it<\/button>/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'the form');
+  L.run("acceptShiftReport('rep-1', { replaceOk: true, reason: ' ' })");
+  eq(L.get('toasts').pop(), 'Say why you are accepting it without collecting the cash.', 'a blank reason');
+  L.run("acceptShiftReport('rep-1', { replaceOk: true, reason: 'Pat took it to the treasurer' })");
+  const b = L.block('b1');
+  eq([b.cashCountedBy, b.cashVerifiedBy, b.reportApprovedBy, b.reportOverride, b.reportOverrideNote, b.reportCollected],
+    ['Nora Newfamily', '', 'Sam Leader', 'not-collected', 'Pat took it to the treasurer', false], 'the block');
+  L.landed();
+  L.run('shiftReportsReconcile()');
+  eq(L.get('patches')[0].body, { action: 'accept', teCents: 12345, cashCents: 2500, override: true, reviewNote: 'Pat took it to the treasurer' }, 'the PATCH');
+  await L.answer(0);
+  ok(/From Nora Newfamily’s report, accepted by Sam Leader without collecting the cash: “Pat took it to the treasurer”\./.test(L.run('renderBlockReportLine(state.storefronts[0].blocks[0])')),
+    'the line');
+  const C = srLeaderCtx({ reports: [srRep()] });
+  C.run("acceptShiftReport('rep-1', { collected: true })");
+  C.landed();
+  C.run('shiftReportsReconcile()');
+  await C.answer(0);
+  ok(/From Nora Newfamily’s report, collected and counted by Sam Leader, who accepted it\./.test(C.run('renderBlockReportLine(state.storefronts[0].blocks[0])')), 'a collected line');
+});
+
+atest('round 1: an accept stuck for 15 minutes can be finished or undone by another leader — one made by the collector only undone', async () => {
+  const st = (p) => ({ scouts: [], leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+    Object.assign({ id: 'b1', label: 'Block 1', assignments: [], salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Nora Newfamily', cashVerifiedBy: '',
+      reportId: 'rep-1', reportFrom: 'Nora Newfamily', reportApprovedBy: 'Lee Other' }, { reportPending: p })] }] });
+  const pend = (over) => Object.assign({ by: 'uid-lee', at: Date.now() - 16 * 60000, te: 12345, cash: 2500, override: true, note: 'Gone home', collected: false,
+    was: { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '' }, wrote: { counted: 'Nora Newfamily', verified: '' } }, over || {});
+  const card = (L) => L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  const fresh = srLeaderCtx({ reports: [srRep()], state: st(pend({ at: Date.now() - 60000 })) });
+  ok(!/Finish accepting|>Undo</.test(card(fresh)) && /Saving… the report is marked accepted once the save reaches the server\./.test(card(fresh)), 'a minute old');
+  const L = srLeaderCtx({ reports: [srRep()], state: st(pend()) });
+  ok(/data-act="sr-takeover" data-rid="rep-1">Finish accepting</.test(card(L)) && /data-act="sr-undo"/.test(card(L)) && /Finishing it records you as the accepting leader\./.test(card(L)),
+    'sixteen minutes old');
+  L.run("leaderShiftReportAct('sr-takeover', { dataset: { rid: 'rep-1' } })");
+  eq([L.block('b1').reportPending.by, L.block('b1').reportApprovedBy], ['uid-ed', 'Sam Leader'], 'taken over');
+  L.landed();
+  L.run('shiftReportsReconcile()');
+  eq(L.get('patches').length, 1, 'finished by the leader who took it over');
+  const U = srLeaderCtx({ reports: [srRep()], state: st(pend()) });
+  U.run("leaderShiftReportAct('sr-undo', { dataset: { rid: 'rep-1' } })");
+  eq([U.block('b1').salesCents, U.block('b1').reportId, U.block('b1').reportPending], [0, undefined, undefined], 'undone');
+  const K = srLeaderCtx({ reports: [srRep()], state: st(pend({ collected: true, override: false, wrote: { counted: 'Nora Newfamily', verified: 'Lee Other' } })) });
+  ok(!/sr-takeover/.test(card(K)) && /Only the leader who collected the cash can finish it; you can undo it\./.test(card(K)), 'a collector’s accept');
+  K.run("leaderShiftReportAct('sr-takeover', { dataset: { rid: 'rep-1' } })");
+  eq(K.block('b1').reportPending.by, 'uid-lee', 'a collector’s accept taken over');
+  const V = srLeaderCtx({ role: 'viewer', reports: [srRep()], state: st(pend()) });
+  V.run("leaderShiftReportAct('sr-undo', { dataset: { rid: 'rep-1' } })");
+  eq(V.block('b1').salesCents, 12345, 'a viewer undid it');
+});
+
+atest('round 1: undoing an accept restores each name on its own, and the sent-back warning; settling unlinks figures edited meanwhile', async () => {
+  const st = { scouts: [], leaders: [{ id: 'l1', name: 'Sam Leader', uid: 'uid-ed' }], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+    { id: 'b1', label: 'Block 1', assignments: [], salesCents: 900, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: '', reportReturned: { note: 'Recount' } }] }] };
+  const L = srLeaderCtx({ state: st, reports: [srRep()] });
+  L.run("acceptShiftReport('rep-1', { collected: true, replaceOk: true })");
+  eq([L.block('b1').cashVerifiedBy, L.block('b1').reportReturned], ['Sam Leader', undefined], 'the accept');
+  // While it is out, someone types the counter's name and a figure by hand.
+  L.run("state.storefronts[0].blocks[0].cashCountedBy = 'Jo Smith'; state.storefronts[0].blocks[0].salesCents = 13000;");
+  L.run("sync.shiftReports.reports[0].status = 'withdrawn'; shiftReportsReconcile()");
+  const b = L.block('b1');
+  eq([b.salesCents, b.cashCountedBy, b.cashVerifiedBy, b.reportReturned, b.reportId], [13000, 'Jo Smith', '', { note: 'Recount' }, undefined],
+    'hand edits kept, the verifier the accept wrote put back, the warning back');
+  // Settling an accept whose figures were edited while it was out: the figures are the leader's.
+  const S = srLeaderCtx({ reports: [srRep()] });
+  S.run("acceptShiftReport('rep-1', { collected: true })");
+  S.landed();
+  S.run('shiftReportsReconcile()');
+  S.run('state.storefronts[0].blocks[0].salesCents = 12000');
+  await S.answer(0);
+  eq([S.block('b1').salesCents, S.block('b1').reportId, S.block('b1').reportPending], [12000, undefined, undefined], 'settled, unlinked');
+});
+
+test('round 1: the different-family rule on the leader card, and the storefronts list of figures that need a second adult', () => {
+  // Ada (s1) and Bo (s2) one family; Bo linked to the sender's spouse only: nobody from another family.
+  const st = { scouts: [{ id: 's1', name: 'Ada', familyId: 'F', parentUids: ['uid-nora'] }, { id: 's2', name: 'Bo', familyId: 'F', parentUids: ['uid-spouse'] },
+    { id: 's3', name: 'Cy', parentUids: [] }], leaders: [],
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-09-20', blocks: [
+      { id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }, { scoutId: 's2', weight: 1 }, { scoutId: 's3', weight: 1 }],
+        salesCents: 500, donationsCents: 0, cashCountedBy: 'Jo', cashVerifiedBy: '' },
+      { id: 'b2', label: 'Block 2', start: '12:00', end: '14:00', assignments: [], salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '',
+        reportReturned: { note: 'x' } },
+      { id: 'b3', label: 'Block 3', start: '14:00', end: '16:00', assignments: [{ scoutId: 's3', weight: 1 }], salesCents: 100, donationsCents: 0,
+        cashCountedBy: 'Jo', cashVerifiedBy: 'Lee' }] }] };
+  const L = srLeaderCtx({ state: st, today: '2026-10-01', reports: [srRep({ needsConfirm: true, confirmed: false, submittedByUid: 'uid-nora' })] });
+  ok(/No parent from another family on this shift is linked to an account/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")),
+    'a spouse counted as another family');
+  L.run("state.scouts[2].parentUids = ['uid-cy']");
+  ok(!/No parent from another family/.test(L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'Cy’s parent is another family');
+  const ban = L.run('renderShiftReportsBanner()');
+  ok(/Figures that need a second adult’s check <span class="pill">2<\/span>/.test(ban), 'the count');
+  ok(/10:00–12:00 · nobody named as verifying the cash/.test(ban) && /12:00–14:00 · sent back after it was accepted/.test(ban) && !/14:00–16:00/.test(ban), 'the rows');
+  eq(srLeaderCtx({ state: st, today: '2026-09-01', reports: [] }).run('renderShiftReportsBanner()'), '', 'a storefront not yet worked');
 });
 
 /* ================================================================

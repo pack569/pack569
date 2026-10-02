@@ -264,12 +264,42 @@ export function shiftParentUids(pack, sfId, blockId) {
   });
   return out;
 }
-// May this account confirm this report as the second parent? An approved member, a parent of a
-// scout on the shift, and not the sender. `parents` is shiftParentUids (null: nobody may).
-// Open for the treasurer (2026-10-01): two parents of one family may confirm each other.
-export function canConfirmShiftReport(role, uid, senderUid, parents) {
-  return canSubmitShiftReport(role) && !!uid && uid !== senderUid && Array.isArray(parents) && parents.indexOf(uid) !== -1;
+// Review round 1 (Keith, 2026-10-01) — WHO MAY CONFIRM: a parent of a scout on the shift from a
+// DIFFERENT FAMILY than the sender. The sender's families are the family keys (familyId, or the
+// scout's own id: the page's familyKeyOf) of every scout the sender is linked to; a confirmer
+// counts only through a scout on the block outside those families, so a spouse or a second
+// account of the same family never confirms. A sender linked to no scout has no family to rule
+// out, and any linked parent on the shift but the sender qualifies. null: fail closed, as above.
+export function shiftConfirmers(pack, sfId, blockId, senderUid) {
+  if (shiftParentUids(pack, sfId, blockId) === null) return null;
+  const famOf = (sc) => (typeof sc.familyId === 'string' && sc.familyId) || sc.id;
+  const senderFams = {};
+  pack.scouts.forEach((sc) => {
+    if (sc && Array.isArray(sc.parentUids) && sc.parentUids.indexOf(senderUid) !== -1) senderFams[famOf(sc)] = true;
+  });
+  const sf = pack.storefronts.filter((x) => x && x.id === sfId)[0];
+  const b = sf.blocks.filter((x) => x && x.id === blockId)[0];
+  const on = {};
+  b.assignments.forEach((a) => { if (a && typeof a.scoutId === 'string') on[a.scoutId] = true; });
+  const out = [];
+  pack.scouts.forEach((sc) => {
+    if (!sc || !on[sc.id] || senderFams[famOf(sc)] || !Array.isArray(sc.parentUids)) return;
+    sc.parentUids.forEach((u) => { if (typeof u === 'string' && u && u !== senderUid && out.indexOf(u) === -1) out.push(u); });
+  });
+  return out;
 }
+// May this account confirm this report as the second parent? An approved member, one of the
+// shift's confirmers (shiftConfirmers: a parent from another family on the shift), not the sender.
+export function canConfirmShiftReport(role, uid, senderUid, confirmers) {
+  return canSubmitShiftReport(role) && !!uid && uid !== senderUid && Array.isArray(confirmers) && confirmers.indexOf(uid) !== -1;
+}
+// Review round 1 (security 6) — the most reports one account may have waiting at once, and send
+// in a day. A table holds a few shifts; anything more is a mistake or worse.
+export const SHIFT_REPORT_MAX_OPEN = 3;
+export const SHIFT_REPORT_MAX_PER_DAY = 20;
+// How far back a leader's list goes (and everything still waiting, whenever it was sent): a season
+// and a bit, so a year-end history has the whole season to read.
+export const SHIFT_REPORT_LEADER_DAYS = 400;
 
 // The storefront event in a parent view that holds this shift, or null. `view` is the stored
 // parent view (parent_views.payload, parsed): the page's buildParentView publishes each

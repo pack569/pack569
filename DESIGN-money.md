@@ -1494,17 +1494,30 @@ API backend they send them in.
 | At the end of a shift | Who | Where | Record written |
 |---|---|---|---|
 | Both figures, signed "I counted it, these match the app" | any approved member, usually a parent at the table | **the parent app's Schedule**, "Enter shift totals" | a **shift report** on the server (`shift_reports`), *not* the pack record |
-| Accepting it as the second sign-off | an admin or editor, never the sender | **Popcorn · Storefronts**, the block's review card | the block: both figures, `cashCountedBy` = the sender, `cashVerifiedBy` = the leader, `reportId`, `reportFrom` |
+| Confirming it, where two or more families worked the shift | a parent **from another family** on the shift, never the sender | **the parent app**, "Check and confirm" | the report only |
+| Accepting it | an admin or editor: never the sender, never the parent who confirmed it | **Popcorn · Storefronts**, the block's review card | the block: both figures, `cashCountedBy` = the sender, `cashVerifiedBy` = the confirming parent (two or more families) or the accepting leader who collected and counted the cash (one family), or blank on an override with a reason; `reportApprovedBy` = the accepting leader; `reportId`, `reportFrom` |
 | Sending it back, with a reason the family sees | an admin or editor | the same card | the report only |
 | …or typing the figures in by hand, as before | an admin or editor | the block's money fields | the block |
 
-- **Nothing counts until a leader accepts.** A waiting report is not money: it is not on the
-  block, so it is not in any scout's total or standings. Once accepted, the block's scouts get
+- **Nothing counts until a leader accepts.** The block carries the figures from the moment a
+  leader taps Accept, and if the server refuses, they come off again. A waiting report is not
+  money: it is not on the block, so it is not in any scout's total or standings. Once accepted, the block's scouts get
   their credit through the ordinary split (`blockShares`), and every rule that treats a block
   "with money" as money, such as the Trail's End import refusing to re-split it, treats it the same.
-- **Two different adults.** The leader who accepts must not be the one who sent the report. The
-  server refuses that, and the page doesn't offer it. This is the cash box's own rule
-  (`blockCashCheck`, "same person").
+- **Two different adults.** The leader who accepts must be neither the one who sent the report
+  nor the parent who confirmed it. The server refuses both, and the page doesn't offer them.
+  This is the cash box's own rule (`blockCashCheck`, "same person").
+- **Who verified the cash** (Keith, review round 1). On a shift with two or more families, the
+  confirming parent. On a one-family shift, the accepting leader, because they collected and
+  counted the cash at the end of the storefront ("I collected and counted this cash — accept").
+  A leader who didn't collect it accepts "without collecting it", with a written reason; that
+  is an override, and `cashVerifiedBy` stays blank, so the cash-count warning stays up until
+  someone verifies it.
+- **Not built yet: the deposit.** Cash donations the pack keeps reach the bank as a ledger
+  entry, and there is no "storefront cash deposit" source yet (a follow-up). Until there is,
+  the risk is twofold. A deposit of kept cash donations posted with no budget line is
+  unexplained income. Posted as "Funds in" against the popcorn line, it counts the same money
+  twice, because the storefront totals already count it.
 - **The accept is two writes, in order.** The block is written and saved first, carrying a
   `reportPending` marker with what it held before. Then the report is signed off on the server
   with exactly the figures shown. If the second write is refused (the family edited or withdrew

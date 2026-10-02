@@ -522,7 +522,11 @@ pack record, so a parent who can send one still can't write anything else.
 
 - **Who can send one:** any approved member, so `admin`, `editor`, `viewer` or `parent`.
   `pending` members and accounts with no membership cannot. The server records the sender's
-  name, account and time from their member record. The page never sends them.
+  name, account and time from their member record. The page never sends them. A leader sends
+  one the same way a family does, through the API. The parent preview a leader opens on the
+  Pack tab only shows where reports stand; nothing can be sent from it.
+- **How many:** one account can have at most **3 reports waiting** at once, and send at most
+  **20 in a day**.
 - **Which shift:** only a shift the pack has published in the **parent view** (the storefront's
   id and the block's id, as `buildParentView` wrote them). The storefront must be dated
   **today or up to 14 days ago**, in the pack's time zone (Eastern). Nobody can report a shift
@@ -535,10 +539,22 @@ pack record, so a parent who can send one still can't write anything else.
 - **Changing a report:** only the sender can edit or withdraw it, and only while it is waiting.
   An edit has to be signed again.
 - **Accepting or sending back:** only `admin` and `editor`. The leader who accepts must be a
-  **different adult** from the one who sent it. The server refuses a leader accepting their
-  own report, just as the cash box refuses the same person as counter and verifier. A leader
-  can send back a waiting or an accepted report, and must give a reason. The family then
-  sends a corrected report as a new one.
+  **different adult** from the one who sent it, and from the parent who confirmed it. The
+  server refuses a leader accepting a report they sent or confirmed, just as the cash box
+  refuses the same person as counter and verifier. A leader can send back a waiting or an
+  accepted report, and must give a reason. The family then sends a corrected report as a new
+  one.
+- **Who verified the cash** (Keith, review round 1). Every accepted report names who did:
+  - **Two or more families on the shift:** the parent from the other family who confirmed it.
+    The accepting leader is recorded as the approver.
+  - **One family:** the accepting leader, who collected and counted the cash at the end of the
+    storefront. Their button says so: "I collected and counted this cash — accept".
+  - **Anyone else:** a leader who didn't collect it, or a two-family shift with only one
+    parent's signature, accepts with a written reason. That is an override, audited as
+    `shift.accept.override`, and nobody is named as verifier, so the block's cash-count
+    warning stays until someone checks it.
+  - The accept is recorded once (who, when, the reason, and whether they collected it), and
+    a later send-back doesn't change that record.
 - **A second parent, when a shift has two or more families** (Keith, 2026-10-01): if the
   scouts on a shift come from two or more families (brothers and sisters count as one), a
   second parent has to confirm the report before a leader accepts it.
@@ -546,19 +562,23 @@ pack record, so a parent who can send one still can't write anything else.
     it is published in calendar-only mode too. The server reads it from the stored view when
     the report is sent, never from the report itself. If a view has no number (published
     before this change), the report needs a second parent anyway.
-  - Only a **parent of a scout on that shift** can confirm: an account an admin has linked to
-    the scout on the Members card. The server checks this against the stored pack record. It
-    is never the sender, never `pending`, and never an account that isn't linked. If the
-    record, the storefront or the block can't be found, nobody can confirm.
+  - Only a **parent from another family on that shift** can confirm: an account an admin has
+    linked on the Members card to a scout on the shift whose family is not the sender's. A
+    spouse, or a second account of the sender's family, can't confirm. If the sender isn't
+    linked to any scout, any linked parent on the shift can. The server checks this against the
+    stored pack record. It is never the sender, never `pending`, and never an account that
+    isn't linked. If the record, the storefront or the block can't be found, nobody can confirm.
+  - A confirm names the figures it was shown. If the sender has changed them since, it is
+    refused. It works only while the shift is still published and within the same 14 days.
   - If the sender edits the report, the confirmation is cleared.
   - An admin or editor can accept a report that has no second signature, but only with a
-    written reason. That accept is audited as `shift.accept.override`.
-  - On the block, the sender is "Cash counted by". "Verified by" is the confirming parent, or
-    the leader if they accepted without one. The accepting leader is shown as the approver.
-  - Open for the treasurer: two parents of the same family can currently confirm each
-    other's reports.
-- **Who sees what:** leaders (`admin`, `editor`, `viewer`) see every report in full. A parent
-  sees their own reports and the first name of the leader who reviewed them. For anyone
+    written reason (see *Who verified the cash* above).
+  - On the block, the sender is "Cash counted by" and the confirming parent is "Verified by".
+    The accepting leader is shown as the approver.
+- **Who sees what:** leaders (`admin`, `editor`, `viewer`) see every report in full, going back
+  400 days, plus any still waiting. A parent sees their own reports, the first name of the
+  leader who reviewed them and of the parent who confirmed them, and a leader's note only when
+  it is the reason the report was sent back. For anyone
   else's report, a parent sees only that the block has a report and whether it is waiting,
   accepted, sent back or withdrawn. They never see another family's amounts, name or note,
   with **one exception**: a report still waiting for a second parent, on a shift from the last
