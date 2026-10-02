@@ -21097,6 +21097,7 @@ const C3_READERS = {
   lineIncomeCents: (L, x) => ['L1', 'L2', 'I1'].map((l) => x.lineIncomeCents(L, l)),
   ledgerIncomeCents: (L, x) => [false, true].map((settled) => x.ledgerIncomeCents(L, (id) => id === 'I1', 700, settled)),
   councilMoneyCheck: (L, x) => x.councilMoneyCheck(L),   // owner, 2026-10-01
+  storefrontDepositsLate: (L, x, c) => [3, 40].map((d) => x.storefrontDepositsLate(c.storefronts, L, false, '', '2026-10-15', d)),   // the deposit deadline
   commissionLookalikes: (L, x) => x.commissionLookalikes(L, (id) => id === 'I1'),
   ledgerTotals: (L, x, c) => x.ledgerTotals(L, c.book),
   reconcileTotals: (L, x, c) => x.reconcileTotals(L, c.book),
@@ -21126,7 +21127,7 @@ const C3_STOREFRONTS = [{ id: 'sf1', name: 'Kroger', date: '2026-09-01', blocks:
 // What those readers need besides themselves.
 const READER_DEPS = ['fmt', 'ledgerLogWhen', 'ledgerCsvCell', 'ledgerPairRole', 'ledgerReplacementId', 'ledgerReplacementFor',
   'statementInForce', 'statementReopened', 'fmtDateShort', 'arrOf', 'depositForIds', 'storefrontKeptCents', 'blockSalesCashInHand',
-  'STOREFRONT_HINT_SOURCES', 'STOREFRONT_HINT_DAYS', 'DEPOSIT_FOR_MAX', 'hintWords'];
+  'STOREFRONT_HINT_SOURCES', 'STOREFRONT_HINT_DAYS', 'DEPOSIT_FOR_MAX', 'hintWords', 'storefrontDepositName'];
 // Security review of C4 (finding 1) — the readers that LIST or COUNT the rows, or tick them. A pair
 // that came apart and was sent back to the ledger is two counted rows that net to $0: these show
 // both (the treasurer ticks the reversal against the statement it is on), and only the balance is
@@ -32379,6 +32380,38 @@ test('council money: the settle step is an editor’s, logged on the book, taken
   eq('councilSettled' in c8wGet(ctx, 'state.book'), false, 'the new year starts settled');
   // Never published.
   ok(!/councilSettled|councilMoney|COUNCIL_SETTLE/.test(codeOnly(BPV())), 'the parent view reads the settlement');
+});
+
+/* ================================================================
+   Owner, 2026-10-01 — the deposit deadline: kept storefront cash donations not banked within the
+   pack's number of days (state.depositDays, default 7) are warned about. Made-up data.
+   ================================================================ */
+test('deposit deadline: what each deposit covers, named storefronts first, then oldest first, and which are late', () => {
+  const x = sandbox(declClosure(['storefrontDepositsLate', 'storefrontLateText', 'depositDaysOf', 'DEPOSIT_DAYS_NOTE'], []));
+  // Kroger Sep 12 kept $425, Publix Sep 19 $200, Wal Sep 26 $100. On Oct 1 they are 19, 12 and 5 days old.
+  const SF = SF_STORES().concat([{ id: 'w', name: 'Wal', date: '2026-09-26', blocks: [{ donationsCents: 10000 }] }]);
+  const late = (L, o) => J(x.storefrontDepositsLate(SF, L, !!(o && o.te), (o && o.cut) || '', '2026-10-01', (o && o.days) || 7)).map((l) => [l.id, l.cents, l.days]);
+  eq(late([]), [['k', 42500, 19], ['p', 20000, 12]], 'nothing banked: the two past 7 days');
+  eq(late([sfRow('d1', 42500, { depositFor: 'p' })]), [['k', 20000, 19]], 'Publix named and covered; the rest of the deposit goes to Kroger');
+  eq(late([sfRow('d1', 60000)]), [['p', 2500, 12]], 'a deposit naming none covers the oldest first');
+  eq(late([sfRow('d1', 72500)]), [], 'everything banked');
+  eq(late([], { days: 14 }), [['k', 42500, 19]], 'the pack’s own number of days');
+  eq(late([], { te: true }), [], 'nothing kept while storefront cash runs through Trail’s End');
+  eq(late([sfRow('old', 42500, { date: '2026-06-01' })], { cut: '2026-06-30' }), [['k', 42500, 19], ['p', 20000, 12]], 'last season’s deposit covers nothing');
+  eq(x.storefrontLateText({ name: 'Kroger, Sep 12', cents: 20000 }, 7),
+    'Storefront cash donations from Kroger, Sep 12 ($200.00) haven’t been deposited after 7 days. Pack policy: deposit within 7 days.', 'the words');
+  eq(vm.runInContext('DEPOSIT_DAYS_NOTE', x), 'This is the pack’s own rule. Scouting America asks for deposits ‘in a timely manner’ without a number of days.', 'the note');
+  eq([undefined, 0, 61, '10', 3.6, 'x'].map((v) => x.depositDaysOf(v)), [7, 7, 60, 10, 4, 7], 'the setting read');
+  const nz = sandbox(NORMALIZE_FNS);
+  const nd = (v) => { const d = { version: 1, scouts: [] }; if (v !== undefined) d.depositDays = v; return nz.normalizeState(d).depositDays; };
+  eq([nd(undefined), nd(10), nd(90), nd(0), nd('7')], [undefined, 10, 60, undefined, undefined], 'normalizeState (absent is the default, and a record gains nothing)');
+  // Where it shows: the Reconcile storefront line (with the setting and its note) and the leaders' Home queue; logged on the book; never published.
+  const h = slice('storefrontCashCheckHtml');
+  ok(/storefrontDepositsLate\(state\.storefronts, state\.ledger, state\.cashThroughTrailsEnd, closedBooksLastCutoff\(state\.closedBooks\), todayISO\(\), dd\)/.test(h) &&
+    /data-ch="deposit-days"/.test(h) && /esc\(DEPOSIT_DAYS_NOTE\)/.test(h), 'the Reconcile line');
+  ok(/var lateSf = storefrontDepositsLate\([^\n]*\);\s*if \(lateSf\.length\) \{\s*add\('treasurer', 'now', storefrontLateText\(lateSf\[0\], lateDd\)/.test(SCRIPT), 'the Home queue');
+  ok(/if \(ch === 'deposit-days'\) \{[\s\S]{0,300}logLedger\('edit', 'book', \{ f: \{ depositDays: \[ddWas, ddNow\] \} \}\)/.test(SCRIPT), 'the setting is not logged');
+  ok(!/depositDays|storefrontDepositsLate|DEPOSIT_DAYS/.test(codeOnly(BPV())), 'the parent view reads the deadline');
 });
 
 /* ---------------- report ---------------- */

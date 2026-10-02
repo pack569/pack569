@@ -4135,6 +4135,12 @@
     d.recruitKit.done = {};
     RECRUIT_KIT_ITEMS.forEach(function (x) { if (rkDone[x.id] === true) d.recruitKit.done[x.id] = true; });
     d.recruitKit.flyerLink = d.recruitKit.flyerLink === true;
+    // Owner, 2026-10-01 — the pack's deposit deadline for kept storefront cash (depositDaysOf): whole days,
+    // 1 to 60, or absent (the default, 7). A literal: this runs before the script's vars are set.
+    if (d.depositDays !== undefined) {
+      var ddN = typeof d.depositDays === 'number' ? Math.round(d.depositDays) : NaN;
+      if (isFinite(ddN) && ddN >= 1) d.depositDays = Math.min(60, ddN); else delete d.depositDays;
+    }
     if (!d.packName) d.packName = 'Pack 569';
     // Wave 22 — the weather lookup location. Defaulted rather than left blank so the feature
     // works on an existing pack record without anyone visiting a settings screen first; every
@@ -8079,6 +8085,54 @@
     }
     return out;
   }
+  // DEPOSIT DEADLINE (owner, 2026-10-01). The pack's own rule: kept storefront cash donations are
+  // banked within state.depositDays days (1–60, default 7; absent = the default, so no record grows).
+  // Scouting America asks only for deposits "in a timely manner", with no number of days.
+  var DEPOSIT_DAYS_DEFAULT = 7;
+  // The pack's number of days, as stored or the default. Pure.
+  function depositDaysOf(v) {
+    var n = typeof v === 'number' ? v : parseInt(v, 10);
+    return isFinite(n) && Math.round(n) >= 1 ? Math.min(60, Math.round(n)) : DEPOSIT_DAYS_DEFAULT;
+  }
+  // Which storefronts' kept cash donations are still not banked, and how long after: [{ id, name, date,
+  // cents, days }], oldest first, only those past `days` (as of `today`). A deposit covers the
+  // storefronts it names first (oldest first, up to what each kept), and whatever is left of it, with
+  // every deposit that names none, covers the rest oldest first. Last season's deposits, and a
+  // storefront with no date or nothing kept, are left out. Arguments as storefrontCashCheck's. Pure.
+  function storefrontDepositsLate(storefronts, ledger, viaTE, lastCutoff, today, days) {
+    var cut = typeof lastCutoff === 'string' ? lastCutoff : '', left = Object.create(null);
+    var sfs = arrOf(storefronts).filter(function (sf) { return sf && typeof sf.id === 'string' && sf.date && storefrontKeptCents(sf, viaTE) > 0; })
+      .slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    sfs.forEach(function (sf) { left[sf.id] = storefrontKeptCents(sf, viaTE); });
+    var here = Object.create(null);
+    arrOf(storefronts).forEach(function (sf) { if (sf && typeof sf.id === 'string') here[sf.id] = true; });
+    var pool = 0;
+    ledgerUnpaired(arrOf(ledger)).forEach(function (e) {
+      if (!e || e.direction !== 'in' || e.source !== 'storefront' || e.scoutId) return;
+      var ids = depositForIds(e.depositFor);
+      if ((ids.length && !ids.some(function (id) { return here[id] === true; })) || (cut && String(e.date || '') <= cut)) return;   // last season's
+      var amt = e.amountCents || 0;
+      sfs.forEach(function (sf) {
+        if (ids.indexOf(sf.id) === -1 || amt <= 0) return;
+        var take = Math.min(amt, left[sf.id]);
+        left[sf.id] -= take;
+        amt -= take;
+      });
+      pool += amt;
+    });
+    sfs.forEach(function (sf) { var take = Math.min(pool, left[sf.id]); left[sf.id] -= take; pool -= take; });
+    var t0 = Date.parse(String(today || ''));
+    return sfs.map(function (sf) {
+      var age = Math.floor((t0 - Date.parse(sf.date)) / 86400000);
+      return { id: sf.id, name: storefrontDepositName(sf), date: sf.date, cents: left[sf.id], days: age };
+    }).filter(function (x) { return x.cents > 0 && isFinite(x.days) && x.days > days; });
+  }
+  // One late storefront in words (the treasurer's queue and the Reconcile line). Pure given fmt.
+  function storefrontLateText(x, days) {
+    return 'Storefront cash donations from ' + x.name + ' (' + fmt(x.cents) + ') haven\u2019t been deposited after ' + days +
+      ' days. Pack policy: deposit within ' + days + ' days.';
+  }
+  var DEPOSIT_DAYS_NOTE = 'This is the pack\u2019s own rule. Scouting America asks for deposits \u2018in a timely manner\u2019 without a number of days.';
   // The storefront cash deposits that name storefront `id`: { count, cents } (the delete confirm,
   // treasurer review of item 11, 19). Counted rows only. Pure.
   function storefrontDepositsNaming(ledger, id) {
@@ -10029,6 +10083,7 @@
     closedYears: 'years closed out',   // Phase 3, C8 (C8-2): what a 'close' event changed (before, after)
     // Item 11 — what a storefront cash deposit covers.
     councilSettled: 'popcorn settled with the council',
+    depositDays: 'deposit kept storefront cash within (days)',
     depositFor: 'storefronts it covers', depositFrom: 'covers from', depositTo: 'covers to', notStorefront: 'not storefront cash'
   };
   // One value from an event's `f`, as a leader reads it. `names` turns an id into a name
@@ -27185,10 +27240,18 @@
   function storefrontCashCheckHtml() {
     var lines = storefrontCashLines(storefrontCashCheck(state.storefronts, state.ledger, state.cashThroughTrailsEnd, closedBooksLastCutoff(state.closedBooks)));
     if (!lines.length) return '';
+    // Owner, 2026-10-01 — the deposit deadline: a warning per storefront past it, and the pack's setting.
+    var dd = depositDaysOf(state.depositDays);
+    storefrontDepositsLate(state.storefronts, state.ledger, state.cashThroughTrailsEnd, closedBooksLastCutoff(state.closedBooks), todayISO(), dd)
+      .forEach(function (x) { lines.push({ warn: true, text: storefrontLateText(x, dd) }); });
     return lines.map(function (ln, i) {
       return '<p class="small" style="margin:' + (i ? '4' : '10') + 'px 0 0' + (ln.warn ? ';color:var(--accent-text)' : '') + '"' + (ln.warn ? ' role="alert"' : '') + '>' +
         (i ? '' : '<span class="pill navy">Storefront cash</span> ') + esc(ln.text) + '</p>';
-    }).join('');
+    }).join('') +
+      '<div class="row" style="margin-top:6px"><label class="fld">Deposit kept storefront cash within (days)' +
+      '<input class="weight-in" type="number" min="1" max="60" step="1" inputmode="numeric" data-ch="deposit-days" value="' + esc(String(dd)) + '"' +
+      (canEdit() ? '' : ' disabled') + '></label></div>' +
+      '<p class="small muted" style="margin:4px 0 0">' + esc(DEPOSIT_DAYS_NOTE) + '</p>';
   }
   // Owner, 2026-10-01 (treasurer review of item 11, 9–10) — the popcorn money held for the council,
   // and the step that settles it: "Popcorn settled with the council" opens a short form (ui.settleDraft:
@@ -28289,6 +28352,14 @@
     if (ledTot.unreconciled >= 5) {
       add('treasurer', 'whenever', ledTot.unreconciled + ' ledger entries not yet reconciled',
         'Tick them against the bank statement', 'money', 'ledger');
+    }
+    // Owner, 2026-10-01 — kept storefront cash past the pack's deposit deadline, oldest first.
+    var lateDd = depositDaysOf(state.depositDays);
+    var lateSf = storefrontDepositsLate(state.storefronts, state.ledger, state.cashThroughTrailsEnd, closedBooksLastCutoff(state.closedBooks), today, lateDd);
+    if (lateSf.length) {
+      add('treasurer', 'now', storefrontLateText(lateSf[0], lateDd),
+        lateSf.length > 1 ? (lateSf.length - 1) + ' more storefront' + (lateSf.length === 2 ? '' : 's') + ' past it too' : 'Bank it as Storefront cash donations (kept)',
+        'money', 'ledger');
     }
     // E2 — the last statement reconciled is more than 35 days old (reconcileStale).
     var recStale = reconcileStale(state.ledger, state.book, today);
@@ -38591,6 +38662,15 @@
     // field existed. Kept as typed (like the commission rates) so a half-typed "3" on the way
     // to "30" doesn't get normalized out from under the cursor.
     if (ch === 'cash-scout-pct') { state.cashScoutPct = el.value; commit(); return; }
+    // Owner, 2026-10-01 — the pack's deposit deadline, 1 to 60 days; logged on the book as the opening figure is.
+    if (ch === 'deposit-days') {
+      var ddWas = depositDaysOf(state.depositDays), ddNow = depositDaysOf(el.value);
+      if (ddNow !== ddWas) {
+        state.depositDays = ddNow;
+        logLedger('edit', 'book', { f: { depositDays: [ddWas, ddNow] } });
+      }
+      commit(); return;
+    }
     // A den's notes on a lesson plan (state.advNotes, BUILD-PLAN §3). Editors and admins: a viewer
     // is never drawn the box, and is refused here before anything changes. Emptied, the note goes
     // (with an Undo). Never echoed into a toast: the words are leaders' only.

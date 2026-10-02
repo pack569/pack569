@@ -1640,6 +1640,17 @@ donations (kept), with no budget line, so they aren't counted twice."
   kept and not yet banked. It shows under the add form and, while the entry is not reconciled, in
   its Detail, with a **Not storefront cash** answer (`notStorefront`, as `notCommission`: logged,
   and cleared when the amount, direction or source changes). It asks, and changes nothing.
+- **The deposit deadline** (owner, 2026-10-01). A pack setting on the Reconcile card, "Deposit kept
+  storefront cash within ‹7› days" (`state.depositDays`, whole days 1–60; absent is the default 7,
+  so no record grows). Beside it: "This is the pack's own rule. Scouting America asks for deposits
+  ‘in a timely manner’ without a number of days." A change is logged on the book (`edit`,
+  `f.depositDays`). `storefrontDepositsLate` works out what each deposit covers: the storefronts
+  it names first (oldest first, up to what each kept), then what is left of it, with every deposit
+  that names none, oldest storefront first; last season's deposits cover nothing. Each storefront
+  whose kept cash is still not covered and is more than N days old gets, on the Reconcile line and
+  (the oldest) as a Treasurer item on Home: "Storefront cash donations from ‹store, date› ($X)
+  haven't been deposited after N days. Pack policy: deposit within N days." Leaders only; never
+  in `buildParentView`. A storefront with no date can't be aged and is never late.
 - **Format.** An older page (format 3) reads the new source as blank, so it counts a deposit
   filed on a line in Funds in, and its next save writes the blank back. `PACK_FORMAT` is 4, one
   raise for everything in this branch.
