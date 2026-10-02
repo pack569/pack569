@@ -1554,6 +1554,11 @@ API backend they send them in.
     one-family accept with some has "I collected and counted the cash donations — accept" and a
     box, "I also collected the $X cash from popcorn sales", which records it once the accept
     lands.
+  - **Trail's End's window** (Keith, 2026-10-01): storefront closeout and Cash to Credit stay
+    open up to 72 hours from the midnight that ends the storefront day, not until midnight. Pack
+    policy is still to convert at the table. Cash still out shows an amber line after 48 of
+    those hours and a red one after 72: "Trail's End closeout and Cash to Credit close 72 hours
+    after the storefront day."
   - **Never lost without a word:** deleting the block or the storefront warns while any is
     still out. So does the close-out, because closing clears the storefronts; the server's
     record stays in Shift reports this season. It is leaders' only: `buildParentView` never

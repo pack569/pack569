@@ -903,6 +903,8 @@
   .sr-row + .sr-row { border-top: 1px solid var(--line-soft); }
   .sr-shift { font-size: 0.86rem; }
   .sr-mine { white-space: nowrap; }
+  .sr-late { color: var(--accent-text); font-weight: 650; }
+  .sr-late-closed { color: var(--bad); font-weight: 650; }
   .sr-form { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding: 12px; border-radius: 10px; background: var(--surface-2); }
   .sr-fields { display: flex; flex-direction: column; gap: 10px; }
   .sr-hint { font-weight: 400; font-size: 0.78rem; line-height: 1.35; color: var(--ink-soft); }
@@ -20015,7 +20017,7 @@
   var SHIFT_REPORT_NOTE_HINT = 'Leaders and the other family on this shift can read this. Don’t name scouts or share anything about a child.';
   // Pack policy (Keith, round 1): cash from popcorn sales is converted before anyone leaves the
   // table. Followups round 1 (parent experience 9): the form says that in the sales-cash box's hint,
-  // so this line is the jar only. Trail's End's midnight cutoff is the day sheet's to say
+  // so this line is the jar only. Trail's End's own 72-hour window is the day sheet's to say
   // (STOREFRONT_CASH_TO_CREDIT), not repeated here.
   var SHIFT_REPORT_CASH_POLICY = 'Cash donations stay in the jar and go to the leader collecting the money.';
   // What each refusal from the server means to a family. Keyed by the answer's reason (a 400's
@@ -22604,10 +22606,12 @@
   var STOREFRONT_SAFETY = 'Buddy system \u00b7 a parent with every scout, an adult at the table at all times \u00b7 scouts stay at the table and never approach cars \u00b7 two adults count the cash before it leaves the table';
   // Printed after each shift's cash count: the family can move its cash into Trail's End credit.
   // Pack policy (popcorn-kernel review D3, Keith round 1): sales cash is converted at the table.
-  // Parent-experience review 21: the deadline is the table, as pack policy says; midnight only as
-  // Trail's End's own cutoff. The family's form leaves the cutoff to this sheet (SHIFT_REPORT_CASH_POLICY).
+  // Parent-experience review 21: the deadline is the table, as pack policy says. Trail's End's own
+  // window is said only in brackets (Keith, 2026-10-01: storefront closeout and Cash to Credit stay
+  // open up to 72 hours from midnight on the storefront date, not until midnight). The family's form
+  // leaves it to this sheet (SHIFT_REPORT_CASH_POLICY).
   var STOREFRONT_CASH_TO_CREDIT = 'Cash from popcorn sales: convert it to credit in the Trail\u2019s End app (Cash to Credit) before you leave the table. ' +
-    '(Trail\u2019s End\u2019s own cutoff is midnight.) Converting doesn\u2019t change the Trail\u2019s End amount. The parent who converts it keeps that cash. ' +
+    '(Trail\u2019s End allows up to 72 hours after the storefront day, but the pack asks you to convert at the table.) Converting doesn\u2019t change the Trail\u2019s End amount. The parent who converts it keeps that cash. ' +
     'Cash donations stay in the jar and go to the leader collecting the money.';
   // S-3 (2026-10-01) — on the day sheet under each shift, where families send their totals (API only).
   var DAY_SHEET_REPORT = 'Before you leave: one parent sends these totals at pack569.com (Schedule, Storefront shift totals). If more than one family worked this shift, ' +
@@ -22912,7 +22916,7 @@
       (r.submittedAt ? ' · ' + esc(srWhen(r.submittedAt)) : '') + (r.updatedAt && r.updatedAt !== r.submittedAt ? ' (changed since)' : '') + '</p>' +
       '<p class="sr-amounts">Trail’s End <strong class="money">' + esc(fmt(r.teCents)) + '</strong> · Cash donations <strong class="money">' +
       esc(fmt(r.cashCents)) + '</strong></p>' +
-      srCashToCollectLine(r.salesCashCents, srNameClean(r.submittedByName) || 'the family') +
+      srCashToCollectLine(r.salesCashCents, srNameClean(r.submittedByName) || 'the family', blk && blk.sf.date) +
       (r.note ? '<p class="small" style="margin:0 0 6px">“' + esc(r.note) + '”</p>' : '');
     if (!blk) h += '<p class="small warn" style="margin:0 0 6px">This shift is no longer on the pack’s schedule. Send it back so the family knows.</p>';
     // Treasurer 7a — cash an earlier report on this block left to collect stays to collect.
@@ -23016,10 +23020,26 @@
   // warns too. The server's record stays in Shift reports this season whatever happens to the block.
   var SR_CASH_TO_COLLECT_WHY = 'Cash from popcorn sales the family couldn’t convert to credit. It’s the council’s money: collect it, deposit it, ' +
     'and record it as Popcorn money for the council. It’s already in the Trail’s End amount, so it isn’t added again.';
-  function srCashToCollectLine(cents, who) {
+  function srCashToCollectLine(cents, who, sfDate) {
     if (!(cents > 0)) return '';
     return '<p class="small warn" style="margin:0 0 6px"><strong>Cash from popcorn sales to collect: ' + esc(fmt(cents)) + '</strong> reported by ' + esc(who) + '. ' +
-      esc(SR_CASH_TO_COLLECT_WHY) + '</p>';
+      esc(SR_CASH_TO_COLLECT_WHY) + '</p>' + srCashAgeLine(sfDate);
+  }
+  // Keith (2026-10-01): Trail's End closes storefront closeout and Cash to Credit 72 hours after the
+  // storefront day (from the midnight that ends it, on this device's clock). Cash from sales still
+  // out: amber once 48 of those hours have gone, red once all 72 have. 'ok' | 'late' | 'closed'.
+  var SR_CASH_72H = 'Trail’s End closeout and Cash to Credit close 72 hours after the storefront day.';
+  function srCashAge(sfDate, nowMs) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(sfDate || ''));
+    if (!m) return 'ok';
+    var ends = new Date(+m[1], +m[2] - 1, +m[3] + 1).getTime();
+    var hours = ((nowMs === undefined ? Date.now() : nowMs) - ends) / 3600000;
+    return hours >= 72 ? 'closed' : hours >= 48 ? 'late' : 'ok';
+  }
+  function srCashAgeLine(sfDate, nowMs) {
+    var age = srCashAge(sfDate, nowMs);
+    if (age === 'ok') return '';
+    return '<p class="small ' + (age === 'closed' ? 'sr-late-closed' : 'sr-late') + '" style="margin:0 0 6px">' + esc(SR_CASH_72H) + '</p>';
   }
   // A block's entries, and those still out (no outcome). `exceptRid`: leave that report's out.
   function srCashEntries(b) { return arrOf(b && b.salesCash); }
@@ -23049,7 +23069,7 @@
     srCashEntries(b).forEach(function (e) {
       var ids = ' data-rid="' + esc(e.reportId) + '"';
       if (!e.outcome) {
-        h += '<div style="margin-top:8px">' + srCashToCollectLine(e.cents, e.from || 'the family') +
+        h += '<div style="margin-top:8px">' + srCashToCollectLine(e.cents, e.from || 'the family', sf.date) +
           (canReviewReports() ? '<div class="sr-acts"><button type="button" class="btn small" data-act="sr-cash-collected"' + ids +
             ' aria-label="' + esc('Mark ' + fmt(e.cents) + ' of cash from popcorn sales collected') + '">Collected</button>' +
             '<button type="button" class="btn small" data-act="sr-cash-converted"' + ids +
@@ -23232,7 +23252,8 @@
       toCollect.list.forEach(function (c) {
         var rng = fmtTimeRange(c.b.start, c.b.end) || c.b.label;
         h += '<div class="spread sr-banner-row"><p class="small" style="margin:0"><strong>' + esc(c.sf.name || 'Storefront') + '</strong> · ' +
-          esc(fmtDate(c.sf.date)) + ' · ' + esc(rng) + ' · ' + esc(fmt(c.e.cents)) + ' reported by ' + esc(c.e.from || 'the family') + '</p>' +
+          esc(fmtDate(c.sf.date)) + ' · ' + esc(rng) + ' · ' + esc(fmt(c.e.cents)) + ' reported by ' + esc(c.e.from || 'the family') +
+          (srCashAge(c.sf.date) === 'ok' ? '' : ' · <span class="' + (srCashAge(c.sf.date) === 'closed' ? 'sr-late-closed' : 'sr-late') + '">' + esc(SR_CASH_72H) + '</span>') + '</p>' +
           '<button type="button" class="btn small" data-act="open-storefront" data-id="' + esc(c.sf.id) + '">Open</button></div>';
       });
     }

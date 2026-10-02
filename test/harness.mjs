@@ -13016,9 +13016,10 @@ test('D2: the day sheet carries the safety rules and the cash count, first names
   const rule = 'Buddy system · a parent with every scout, an adult at the table at all times · scouts stay at the table and never approach cars · two adults count the cash before it leaves the table';
   eq(ctx.STOREFRONT_SAFETY, rule, 'the safety line');
   // Popcorn-kernel review, round 1 (pack policy): sales cash is converted at the table.
-  // Parent-experience review 21: before you leave the table; midnight only as Trail's End's cutoff.
+  // Parent-experience review 21: before you leave the table. Keith (2026-10-01): Trail's End's own
+  // window is 72 hours after the storefront day, not midnight.
   const credit = 'Cash from popcorn sales: convert it to credit in the Trail’s End app (Cash to Credit) before you leave the table. ' +
-    '(Trail’s End’s own cutoff is midnight.) Converting doesn’t change the Trail’s End amount. The parent who converts it keeps that cash. ' +
+    '(Trail’s End allows up to 72 hours after the storefront day, but the pack asks you to convert at the table.) Converting doesn’t change the Trail’s End amount. The parent who converts it keeps that cash. ' +
     'Cash donations stay in the jar and go to the leader collecting the money.';
   eq(ctx.STOREFRONT_CASH_TO_CREDIT, credit, 'the cash-to-credit line');
   const tl = txt.split('\n');
@@ -16117,7 +16118,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'shiftReportsReconcile', 'shiftReportsAfterPush', 'returnShiftReport', 'leaderShiftReportAct', 'srHandEdited', 'getStorefront',
   'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout', 'shiftConfirmSubmit',
   'srIConfirmed', 'srFamiliesNow', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'familyKeyOf', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-  'srSameFigures', 'srSameFamily', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+  'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
   'ledgerActor', 'ledgerActorName',
@@ -17686,7 +17687,7 @@ function srLeaderCtx(o) {
        'srHandEdited', 'returnShiftReport', 'leaderShiftReportAct', 'srReasonDraft', 'srNameClean', 'ledgerStampClean', 'srUnlink', 'srNeedsSecond', 'srOtherParentLinked', 'getScout',
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
-       'srSameFigures', 'srSameFamily', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
+       'srSameFigures', 'srSameFamily', 'SR_CASH_72H', 'srCashAge', 'srCashAgeLine', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
@@ -18779,8 +18780,8 @@ test('round 1: the family form says what each figure is, what to do with sales c
     'the cash hint');
   ok(/<label for="srNote">Note for the leader \(optional\)<\/label><textarea id="srNote" name="note" aria-describedby="srNoteHint" [^>]*><\/textarea><span class="sr-hint" id="srNoteHint">Leaders and the other family on this shift can read this\. Don’t name scouts or share anything about a child\.<\/span>/.test(f),
     'the note’s hint (youth-protection review 1)');
-  // Followups round 1 (parent experience 9): the jar only; converting is the sales-cash box's hint, midnight the day sheet's.
-  ok(/<strong>Cash donations stay in the jar and go to the leader collecting the money\.<\/strong><\/p><div class="sr-acts">/.test(f) && !/midnight/.test(f),
+  // Followups round 1 (parent experience 9): the jar only; converting is the sales-cash box's hint, Trail's End's window the day sheet's.
+  ok(/<strong>Cash donations stay in the jar and go to the leader collecting the money\.<\/strong><\/p><div class="sr-acts">/.test(f) && !/midnight|72 hours/.test(f),
     'the cash policy, above the buttons');
   ok(/Worked a popcorn table outside a store \(a storefront shift\)\? Before you leave, one parent sends the totals for the whole table\. If another family worked it with you, a parent from that family confirms them here\. Working two shifts in a row\? Send totals for each one, and count the donation jar when the shift changes\./.test(f),
     'the card’s intro');
@@ -18960,6 +18961,27 @@ atest('same family: the leader’s card hides the accept from a leader in the se
   ok(!/job/i.test(codeOnly(slice('srSameFamily'))), 'the page’s rule reads pack jobs');
   eq(sandbox(NORMALIZE_FNS).normalizeState(Object.assign(JSON.parse(JSON.stringify(preMigrationState())), { storefronts: [{ id: 'sf1', name: 'K', date: '2026-10-03',
     blocks: [{ id: 'b1', label: 'B', assignments: [], reportId: 'r', reportOverride: 'same-family' }] }] })).storefronts[0].blocks[0].reportOverride, 'same-family', 'kept by normalizeState');
+});
+
+test('72 hours: Trail’s End’s window is said as 72 hours, never midnight, and cash still out turns amber at 48 and red at 72', () => {
+  ok(!/midnight/i.test(codeOnly(SCRIPT).replace(/minutes past midnight/g, '')) && !/midnight/i.test(SETUP), 'midnight is still the cutoff somewhere');
+  const L = srLeaderCtx({ state: { scouts: [], leaders: [], storefronts: [{ id: 'sf1', name: 'K', date: '2020-01-04', blocks: [{ id: 'b1', label: 'B', start: '10:00', end: '12:00',
+    assignments: [], salesCents: 100, donationsCents: 0, salesCash: [{ reportId: 'r9', cents: 100, from: 'Nora', outcome: null }] }] }] } });
+  const ends = new Date(2026, 9, 4).getTime();   // the midnight that ends Oct 3, on this device's clock
+  const age = (h) => L.run(`srCashAge('2026-10-03', ${ends + h * 3600000})`);
+  eq([age(-5), age(0), age(47.9), age(48), age(71.9), age(72), age(500)], ['ok', 'ok', 'ok', 'late', 'late', 'closed', 'closed'], 'the hours');
+  eq(L.run("srCashAge('', 0)"), 'ok', 'no date');
+  const words = 'Trail’s End closeout and Cash to Credit close 72 hours after the storefront day.';
+  eq(L.run(`srCashAgeLine('2026-10-03', ${ends + 50 * 3600000})`), '<p class="small sr-late" style="margin:0 0 6px">' + words + '</p>', 'amber');
+  eq(L.run(`srCashAgeLine('2026-10-03', ${ends + 80 * 3600000})`), '<p class="small sr-late-closed" style="margin:0 0 6px">' + words + '</p>', 'red');
+  eq(L.run(`srCashAgeLine('2026-10-03', ${ends})`), '', 'not yet');
+  // On the block, the card and the banner, only while the cash is still out (a date long past here).
+  ok(L.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])').indexOf('sr-late-closed" style="margin:0 0 6px">' + words) !== -1, 'the block');
+  ok(L.run('renderShiftReportsBanner()').indexOf('<span class="sr-late-closed">' + words + '</span>') !== -1, 'the banner');
+  ok(/srCashToCollectLine\(r\.salesCashCents, srNameClean\(r\.submittedByName\) \|\| 'the family', blk && blk\.sf\.date\)/.test(slice('renderShiftReportCard')), 'the card');
+  L.run("state.storefronts[0].blocks[0].salesCash[0].outcome = { outcome: 'collected', by: 'Sam', at: 1 }");
+  ok(L.run('renderBlockCashToCollect(state.storefronts[0], state.storefronts[0].blocks[0])').indexOf(words) === -1, 'collected: no warning');
+  ok(/\.sr-late-closed \{ color: var\(--bad\);/.test(HTML), 'red is the page’s own red');
 });
 
 /* S-5 (Keith, 2026-10-01) — on the page: the family's third figure, and the leaders' "cash to
