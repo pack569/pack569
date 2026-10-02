@@ -2103,24 +2103,24 @@
       {"id": "asstden", "label": "Assistant Den Leader"},
       {"id": "parent", "label": "Parent"}
     ],
-    "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "dues", "fundraisers", "sharing", "people", "season"],
+    "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "deposits", "dues", "fundraisers", "sharing", "people", "season"],
     "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal"],
     "access": {
       "cubmaster": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
       "asstcub": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
-      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "dues", "fundraisers", "people", "season"], "hidden": []},
-      "treasurer": {"default": "read", "edit": ["budget", "ledger", "dues", "fundraisers"], "hidden": []},
-      "secretary": {"default": "read", "edit": ["roster"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "kernel": {"default": "read", "edit": ["storefronts", "totals", "rewards", "inventory", "council"], "hidden": []},
-      "advancement": {"default": "read", "edit": ["advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "activities": {"default": "read", "edit": ["calendar", "calendar.denmeeting"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "membership": {"default": "read", "edit": ["roster", "joining"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "outdoors": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "derbychair": {"default": "read", "edit": ["derby"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "comms": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "trainer": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
-      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
+      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "deposits", "dues", "fundraisers", "people", "season"], "hidden": []},
+      "treasurer": {"default": "read", "edit": ["budget", "ledger", "deposits", "dues", "fundraisers"], "hidden": []},
+      "secretary": {"default": "read", "edit": ["roster"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "kernel": {"default": "read", "edit": ["storefronts", "totals", "rewards", "inventory", "council", "deposits"], "hidden": []},
+      "advancement": {"default": "read", "edit": ["advancement"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "activities": {"default": "read", "edit": ["calendar", "calendar.denmeeting"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "membership": {"default": "read", "edit": ["roster", "joining"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "outdoors": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "derbychair": {"default": "read", "edit": ["derby"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "comms": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "trainer": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers", "people"]},
+      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers", "people"]},
       "parent": {"default": "hidden", "edit": [], "hidden": []}
     },
     "keyOwner": {
@@ -2168,7 +2168,7 @@
       "ledgerAside": "ledger",
       "ledgerLog": "ledger",
       "statements": "ledger",
-      "depositDays": "ledger",
+      "depositDays": "deposits",
       "charges": "dues",
       "collected": "dues",
       "fundraisers": "fundraisers",
@@ -2181,7 +2181,13 @@
       "closedGone": "admin"
     },
     "goneOwner": {"entries": "totals", "imports": "totals", "ledger": "ledger", "distributions": "inventory", "products": "inventory", "sales": "fundraisers", "fundraisers": "fundraisers", "scouts": "roster"},
-    "bookLogOwner": {"orderTotalCents": "inventory", "invCommissionPct": "inventory"}
+    "bookLogOwner": {"orderTotalCents": "inventory", "invCommissionPct": "inventory"},
+    "actions": {
+      "shiftVerify": ["cubmaster", "asstcub", "chair", "treasurer", "kernel", "denleader", "asstden"],
+      "shiftUndo": ["chair", "treasurer", "kernel"]
+    },
+    "blockReportFields": ["salesCents", "donationsCents", "cashCountedBy", "cashVerifiedBy", "reportId", "reportFrom", "reportApprovedBy", "reportConfirmedBy",
+      "reportOverride", "reportOverrideNote", "reportCollected", "reportReturned", "reportPending", "salesCash"]
   }/*ACCESS-END*/;
   // Module-scope array guard. (normalizeSeasonArchive has its own `list()`, but that one is
   // local to it — this is the one everything outside the normalizer uses.)
@@ -5401,6 +5407,10 @@
     if (e.source === 'council' && e.scoutId) e.source = '';
     // Treasurer review of item 11 (13) — the answer "not storefront cash": true, or absent.
     if (e.notStorefront !== true) delete e.notStorefront;
+    // Keith, 2026-10-02 (positions) — a storefront deposit the Popcorn Kernel recorded, for the treasurer
+    // to review: true, or absent. The pack's server lets a leader who records deposits but does not edit
+    // the ledger add only such a row (access.js depositRowOk); the treasurer's edit takes the flag off.
+    if (e.depositReview !== true || e.source !== 'storefront') delete e.depositReview;
     if (e.source === 'storefront') {
       e.depositFor = depositForIds(e.depositFor).join(',');
       ['depositFrom', 'depositTo'].forEach(function (k) {
@@ -8371,9 +8381,18 @@
     if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
     if (typeof s.on !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.on) || COUNCIL_SETTLE_HOW.indexOf(s.how) === -1) return null;
     // Security re-check of 89c08b5 (3) — `at` an ISO time, `byUid` an id: anything longer or else is ''.
-    return { on: s.on, how: s.how, by: ledgerStampClean(s.by),
+    var out = { on: s.on, how: s.how, by: ledgerStampClean(s.by),
       byUid: typeof s.byUid === 'string' && s.byUid.length <= 128 ? s.byUid : '',
       at: typeof s.at === 'string' && s.at.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(s.at) ? s.at : '' };
+    // Keith, 2026-10-02 — the Committee Chair who approved it, by name (named, not a sign-in: the
+    // treasurer types it). Only when there is one, so a settlement from before reads as it did.
+    var ap = councilApproverClean(s.approvedBy);
+    if (ap) out.approvedBy = ap;
+    return out;
+  }
+  // The approving Chair's name as stored: one line, at most 80 characters, never an email. Pure.
+  function councilApproverClean(v) {
+    return ledgerStampClean(String(typeof v === 'string' ? v : '').replace(/\s+/g, ' ').trim().slice(0, 80));
   }
   // The settlement two copies of one book agree on (mergeRemoteAppendOnly): `here` and `there` are the
   // books, `logHere` and `logThere` their ledgerLogs. The newest 'settle' or 'unsettle' event on row
@@ -8443,6 +8462,7 @@
     }
     if (settled) {
       out.push({ warn: false, text: 'Settled with the council on ' + fmtDateShort(settled.on) + ': ' + (COUNCIL_SETTLE_LABELS[settled.how] || '') + '. ' +
+        (settled.approvedBy ? 'Approved by ' + settled.approvedBy + ', Committee Chair. ' : '') +
         'The commission is actual now: ' + fmt(chk.banked) + ' banked \u2212 ' + fmt(chk.paid) + ' paid' +
         (chk.checks ? ' + ' + fmt(chk.checks) + ' in commission checks' : '') + ' = ' + fmt(chk.commission) + ', and that is what Funds in counts.' });
       if (estimate != null && estimate !== chk.commission) out.push({ warn: true, text: councilEstimateText(estimate, chk.commission) });
@@ -15946,7 +15966,9 @@
   // moves onto the pack record. The scope follows the role both ways, and a denied roster read
   // (a leader demoted mid-session) drops to the own-doc watch rather than being read as "the
   // rules aren't published", which is what handleAccountsError would conclude.
-  var LEADER_ROLES = ['admin', 'editor', 'viewer'];
+  // 'leader' (a leader holding pack positions) exists only on the API backend (functions/_lib/rules.js
+  // LEADER_ROLES); Firestore never has one, so there the list is Part C's isLeader() as before.
+  var LEADER_ROLES = ['admin', 'editor', 'viewer', 'leader'];
   function applyMembersSubscription(mine) {
     if (sync.session !== mine || !cloudReady() || !sync.user) return;
     var leader = LEADER_ROLES.indexOf(sync.myRole) !== -1;
@@ -21606,10 +21628,10 @@
      is what lets a parent, who may not write the pack, send one (the harness holds it).
      ⚠ API only. firestoreBackend has no shift-report calls, so on a Firestore page (the way back)
      the feature is simply not there. Shown to any approved, signed-in member: the server allows
-     admin, editor, viewer and parent, and refuses pending — the same list. Never by job.
+     admin, editor, viewer, leader and parent, and refuses pending — the same list. Never by job.
      The window is the server's: a storefront dated today, or up to 14 days back, in the pack's
      time zone (rules.js packToday, America/New_York). */
-  var SHIFT_REPORT_ROLES = ['admin', 'editor', 'viewer', 'parent'];
+  var SHIFT_REPORT_ROLES = ['admin', 'editor', 'viewer', 'leader', 'parent'];
   var SHIFT_REPORT_DAYS = 14;
   var SHIFT_REPORT_TZ = 'America/New_York';
   var SHIFT_REPORT_MAX_CENTS = 1000000;
@@ -29080,7 +29102,8 @@
       '<label class="fld">Settled on<input type="date" data-ch="settle-on" value="' + esc(d.on || '') + '"></label>' +
       '<label class="fld">How<select data-ch="settle-how">' + COUNCIL_SETTLE_HOW.map(function (k) {
         return '<option value="' + k + '"' + (d.how === k ? ' selected' : '') + '>' + esc(COUNCIL_SETTLE_LABELS[k].charAt(0).toUpperCase() + COUNCIL_SETTLE_LABELS[k].slice(1)) + '</option>';
-      }).join('') + '</select></label></div>' +
+      }).join('') + '</select></label>' +
+      '<label class="fld">Approved by (Committee Chair)<input type="text" data-ch="settle-approved" maxlength="80" autocomplete="off" value="' + esc(d.approvedBy || '') + '"></label></div>' +
       '<p class="small" style="margin:6px 0 0">Funds in will count the commission as actual: ' + esc(fmt(chk.banked)) + ' banked for the council \u2212 ' +
         esc(fmt(chk.paid)) + ' paid to it + ' + esc(fmt(chk.checks)) + ' in commission checks = <strong class="money">' + esc(fmt(chk.commission)) + '</strong>' +
         (est != null ? ' (sales work out to ' + esc(fmt(est)) + ')' : '') + '.</p>' +
@@ -38326,6 +38349,9 @@
     // after the first tap, it disarms Add it).
     var stWhyEl = e.target.closest('input[data-ch="st-reopen-why"]');
     if (stWhyEl) ui.stReopenWhy = stWhyEl.value;
+    // Keith, 2026-10-02 — and the name of the Chair who approved the council settlement.
+    var apEl = e.target.closest('input[data-ch="settle-approved"]');
+    if (apEl && ui.settleDraft) ui.settleDraft.approvedBy = apEl.value;
     var stBalEl = e.target.closest('input[data-ch="st-balance"]');
     if (stBalEl) { ui.stBalance = stBalEl.value; if (/^st-balance-go:/.test(String(ui.armed || ''))) ui.armed = null; }
     // Phase 3, C4 — and the Reverse or correct form's why and figures (a figure typed disarms it).
@@ -39144,8 +39170,11 @@
       if (!canEdit()) { showToast('Read-only access — ask a pack admin to make you an editor.'); return; }
       if (state.book.closedAt) { showToast('This year is closed out.'); return; }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(sd.on || '') || COUNCIL_SETTLE_HOW.indexOf(sd.how) === -1) { showToast('Enter the date it was settled.'); return; }
+      // Keith, 2026-10-02 — the settlement names the Committee Chair who approved it (named, not gated).
+      if (!councilApproverClean(sd.approvedBy)) { showToast('Enter the name of the Committee Chair who approved the settlement.'); return; }
       var sdWas = councilSettledText(state.book.councilSettled);
-      state.book.councilSettled = { on: sd.on, how: sd.how, by: ledgerActor(), byUid: ledgerActorUid(), at: new Date().toISOString() };
+      state.book.councilSettled = { on: sd.on, how: sd.how, by: ledgerActor(), byUid: ledgerActorUid(), at: new Date().toISOString(),
+        approvedBy: councilApproverClean(sd.approvedBy) };
       logLedger('settle', 'book', { f: { councilSettled: [sdWas || null, councilSettledText(state.book.councilSettled)] } });
       ui.settleDraft = null;
       showToast('Settled. Funds in now counts the commission as actual: the money held for the council.');
@@ -41002,6 +41031,8 @@
       if (ch === 'settle-on') ui.settleDraft.on = el.value; else ui.settleDraft.how = el.value;
       render(); return;
     }
+    // The approving Chair's name: kept as typed, not redrawn (a redraw would take the cursor away).
+    if (ch === 'settle-approved') { if (ui.settleDraft) ui.settleDraft.approvedBy = el.value; return; }
     // Filters live in `ui`, so they re-render but never persist.
     if (ch === 'ledger-search') { ui.ledgerFilter.text = el.value; render(); return; }
     if (ch === 'ledger-line-filter') { ui.ledgerFilter.lineId = el.value; render(); return; }

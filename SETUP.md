@@ -520,7 +520,7 @@ then accepts the report as the **second sign-off**, and only then do the figures
 block and the standings. Reports are kept in their own table (`shift_reports`), never in the
 pack record, so a parent who can send one still can't write anything else.
 
-- **Who can send one:** any approved member, so `admin`, `editor`, `viewer` or `parent`.
+- **Who can send one:** any approved member, so `admin`, `editor`, `viewer`, `leader` or `parent`.
   `pending` members and accounts with no membership cannot. The server records the sender's
   name, account and time from their member record. The page never sends them. A leader sends
   one the same way a family does, through the API. The parent preview a leader opens on the
@@ -544,12 +544,13 @@ pack record, so a parent who can send one still can't write anything else.
   parent's confirmation and a leader's accept must name it, like the other two figures. It is
   never published to parents; another family sees it only in the one exception under *Who sees
   what* below.
-- **What became of that cash** (treasurer and security review, followups round 1): only an
-  `admin` or `editor`, and only on a report that has some and was **accepted** (it may have
+- **What became of that cash** (treasurer and security review, followups round 1): only a
+  leader who can accept reports (below), and only on a report that has some and was **accepted** (it may have
   been sent back since), records on the server that they **collected** it, or that the family
   **converted** it to credit after all. On a report sent back after it was accepted, they can
   instead mark it **the same cash as the new report** (`replaced`), so a corrected report's
-  figure isn't counted twice. They can undo any of these. The record names the amount it is about and is refused if the report has moved
+  figure isn't counted twice. The leader who recorded it, the leader who accepted the report,
+  the Popcorn Kernel, the Committee Chair, the Treasurer or an admin can undo it. The record names the amount it is about and is refused if the report has moved
   since. It keeps who recorded it and when, from their member record and the server's clock.
   Each change is audited (`shift.salescash.collected`, `.converted`, `.replaced`, `.undo`), and leaders see
   it in the season's shift-report history.
@@ -558,7 +559,15 @@ pack record, so a parent who can send one still can't write anything else.
   sender withdraws it.
 - **Changing a report:** only the sender can edit or withdraw it, and only while it is waiting.
   An edit has to be signed again.
-- **Accepting or sending back:** only `admin` and `editor`. The leader who accepts must be a
+- **Accepting or sending back** (Keith, 2026-10-02): an `admin`, or a `leader` holding one of
+  the positions at the booth: Committee Chair, Cubmaster, Assistant Cubmaster, Den Leader,
+  Assistant Den Leader, Popcorn Kernel or Treasurer (`shiftVerify` in
+  `functions/_lib/access.js`). Never a parent, and no longer a retired `editor`. Each write
+  re-checks the position. Sending back an **accepted** report takes the accept back: only the
+  leader who accepted it, the Popcorn Kernel, the Committee Chair, the Treasurer or an admin
+  can, with a reason, and it is audited. A booth leader who doesn't edit storefronts may still
+  save the accepted figures and names onto the block in the pack record, and nothing else of
+  it. The leader who accepts must be a
   **different adult** from the one who sent it, and from the parent who confirmed it. The
   server refuses a leader accepting a report they sent or confirmed, just as the cash box
   refuses the same person as counter and verifier. A leader can send back a waiting or an
@@ -574,7 +583,7 @@ pack record, so a parent who can send one still can't write anything else.
   works as before. If the pack record exists but can't be read, the server treats it as the
   same family, so only an accept with a reason gets through. The same rule applies to recording
   what became of a report's cash from popcorn sales, which is never the sender, nor the parent
-  who confirmed it, either; anyone may undo that record. The rule reads links between people, never pack jobs.
+  who confirmed it, either; undoing that record is as above. The rule reads links between people, never pack jobs.
 - **Who verified the cash** (Keith, review round 1). Every accepted report names who did:
   - **Two or more families on the shift:** the parent from the other family who confirmed it.
     The accepting leader is recorded as the approver.
@@ -603,11 +612,11 @@ pack record, so a parent who can send one still can't write anything else.
   - A confirm names the figures it was shown. If the sender has changed them since, it is
     refused. It works only while the shift is still published and within the same 14 days.
   - If the sender edits the report, the confirmation is cleared.
-  - An admin or editor can accept a report that has no second signature, but only with a
+  - A leader who can accept can accept a report that has no second signature, but only with a
     written reason (see *Who verified the cash* above).
   - On the block, the sender is "Cash counted by" and the confirming parent is "Verified by".
     The accepting leader is shown as the approver.
-- **Who sees what:** leaders (`admin`, `editor`, `viewer`) see every report in full, going back
+- **Who sees what:** leaders (`admin`, `editor`, `viewer`, `leader`) see every report in full, going back
   400 days, plus any still waiting. A parent sees their own reports, the first name of the
   leader who reviewed them and of the parent who confirmed them, and a leader's note only when
   it is the reason the report was sent back. For anyone

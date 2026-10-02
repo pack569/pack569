@@ -28,7 +28,7 @@
 // an admin gives it positions; no invite or role change makes a new one. Part C (Firestore) still
 // has both, and the rows stay legal here so the pack's existing accounts still load.
 
-import { POSITIONS, SECTIONS, effectiveAccess } from './access.js';
+import { POSITIONS, SECTIONS, effectiveAccess, canDo } from './access.js';
 
 export const ROLES = ['admin', 'editor', 'viewer', 'leader', 'parent', 'pending'];
 export const LEADER_ROLES = ['admin', 'editor', 'viewer', 'leader'];
@@ -223,10 +223,22 @@ export function emailKey(raw) {
 // in prose.
 
 // Who may send a report: any approved member — never 'pending', never someone with no row.
-export const canSubmitShiftReport = (role) => ['admin', 'editor', 'viewer', 'parent'].indexOf(role) !== -1;
-// Who may accept one or send it back: an admin. A retired editor no longer may (Keith,
-// 2026-10-02); the leaders at the booth get it as its own action next (shiftVerify).
-export const canReviewShiftReport = (role) => isAdmin(role);
+export const canSubmitShiftReport = (role) => ['admin', 'editor', 'viewer', 'leader', 'parent'].indexOf(role) !== -1;
+// Who may accept one, send one back that waits, and record what became of its cash: the action
+// shiftVerify (Keith, 2026-10-02) — an admin, or a leader at the booth (the Chair, the Cubmaster and
+// assistant, a Den Leader and assistant, the Kernel, the Treasurer; access.js lists them). Never a
+// parent, and no longer the retired editor. Not the same as writing the pack record: a den leader
+// accepts without editing storefronts (the PUT lets them write the report's fields on the block).
+export const canReviewShiftReport = (role, positions) => canDo(role, positions, 'shiftVerify');
+// Who may take an accept back (send back an accepted report), or undo what became of its cash: the
+// leader who did it (`doneBy`: the accepter, or the one who recorded the cash), while they may still
+// verify, or the undo list (shiftUndo: the Kernel, the Chair, the Treasurer; an admin). Keith,
+// 2026-10-02. The send-back's written reason and its audit row are the record.
+export function canUndoShiftReport(role, positions, uid, doneBy) {
+  if (canDo(role, positions, 'shiftUndo')) return true;
+  const mine = !!uid && (Array.isArray(doneBy) ? doneBy : [doneBy]).indexOf(uid) !== -1;
+  return mine && canReviewShiftReport(role, positions);
+}
 // Who sees every report in full (names, amounts, notes): the leaders, as with the ledger. A
 // parent sees their own in full, and of anyone else's only which blocks are spoken for.
 export const canReadAllShiftReports = (role) => isLeader(role);

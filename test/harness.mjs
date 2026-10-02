@@ -1037,7 +1037,7 @@ const NORMALIZE_FNS = ['PACK_FORMAT', 'formatAhead', 'SYNC_LOG_MAX', 'normalizeS
   // Security re-check of C5 (R4) — one log event, live and archived alike.
   'normalizeLedgerEvent',
   // Phase 3, C1 — the ledger row normalizer, shared by the rows set aside.
-  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'closedBookRank', 'normalizeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'COUNCIL_SETTLE_HOW', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
+  'LEDGER_ASIDE_OFF', 'normalizeAsideRow', 'normalizeClosedBook', 'mergeClosedBooks', 'closedBookRank', 'normalizeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'councilApproverClean', 'COUNCIL_SETTLE_HOW', 'LEDGER_INCOME_SOURCES', 'entryIsRefund',
   'lineActualCents', 'entryRefundsFamily', 'ledgerUnpaired', 'entrySignedCents',
   // Wave 22 — normalizeState shape-checks storefront weather against WEATHER_TAGS and
   // defaults packLoc from WX_DEFAULT_LOC, so both have to be in the sandbox with it.
@@ -1060,7 +1060,7 @@ const SYNC_WORDS_FNS = ['SYNC_AREA_LABELS', 'SYNC_LIST_LABELS', 'SYNC_FIELD_LABE
 const C8_SYNC_FNS = [SR_SYNC_STUBS, ...SYNC_BASE_FNS, ...SYNC_WORDS_FNS, 'closedBookOf', 'closeoutRecordOf', 'closedBooksLost', 'mergeClosedBooks', 'closedBookScouts', 'closedBookScoutIds', 'closedYearText', 'closedBooksKeptOverWhy', 'closeoutCarryDiffs',
   'closedBooksUndone', 'closedBooksUndoneWhy', 'closedBooksDroppedWhy', 'closedBookRows', 'statementLookupRows',
   // Security re-check of C8-5..C8-10 — the bound by program year (M-A), the push's union normalized (L-B), and what a merge says it set aside.
-  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'COUNCIL_SETTLE_HOW', 'councilSettledMerged', 'councilSettledText', 'COUNCIL_SETTLE_LABELS', 'normalizeAsideRow', 'normalizeLedgerEvent',
+  'closedBookRank', 'closedBookScoutIds', 'closedBooksFuture', 'closedBooksMaxYear', 'closedBooksNormalized', 'normalizeClosedBook', 'normalizeLedgerRow', 'depositForIds', 'DEPOSIT_FOR_MAX', 'councilSettledNormal', 'councilApproverClean', 'COUNCIL_SETTLE_HOW', 'councilSettledMerged', 'councilSettledText', 'COUNCIL_SETTLE_LABELS', 'normalizeAsideRow', 'normalizeLedgerEvent',
   'stableRowId', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'LEDGER_ASIDE_OFF', 'arrOf',
   // M-B — the tombstones of a closed year.
   'normalizeClosedGone', 'mergeClosedGone', 'closedGoneHas', 'closedGoneArchives', 'closedGoneAdd', 'closedGoneDrops', 'closedGoneForKeep', 'ledgerActorUid', 'closedBooksShorter',
@@ -8418,7 +8418,11 @@ test('who may read what: roster, join code and parent view', () => {
   eq(scopeFor('parent'), ['self', 'me'], 'a parent subscribes to the whole members collection');
   eq(scopeFor('pending'), ['self', 'me'], 'a pending user subscribes to the whole members collection');
   eq(scopeFor('editor'), ['all', 'me'], 'a leader does not watch the roster');
-  eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], "['admin', 'editor', 'viewer']", 'LEADER_ROLES drifted from isLeader()');
+  eq(scopeFor('leader'), ['all', 'me'], 'a leader holding positions does not watch the roster');
+  // isLeader(), and the API's 'leader' (positions, 2026-10-02), which Firestore never has.
+  eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], "['admin', 'editor', 'viewer', 'leader']", 'LEADER_ROLES drifted from isLeader()');
+  eq(/var LEADER_ROLES = (\[[^\]]*\])/.exec(SCRIPT)[1], /export const LEADER_ROLES = (\[[^\]]*\]);/.exec(readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8'))[1],
+    'LEADER_ROLES vs the server\'s');
   ok(!/subscribeMembers/.test(slice('startAccounts')) && /applyMembersSubscription\(mine\)/.test(slice('startAccounts')),
     'startAccounts subscribes the whole roster for every role again');
 });
@@ -16118,7 +16122,7 @@ test('positions: the access table in index.html is a byte-identical copy of the 
   const server = accessCopy(ACCESS_SRC, 'access.js'), page = accessCopy(SCRIPT, 'index.html');
   ok(server === page, 'the two ACCESS tables differ: change both or neither');
   const t = JSON.parse(server);
-  eq(Object.keys(t), ['positions', 'sections', 'denMeetingFields', 'access', 'keyOwner', 'goneOwner', 'bookLogOwner'], 'the table\'s parts');
+  eq(Object.keys(t), ['positions', 'sections', 'denMeetingFields', 'access', 'keyOwner', 'goneOwner', 'bookLogOwner', 'actions', 'blockReportFields'], 'the table\'s parts');
   ok(/^  var ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(SCRIPT), 'index.html: var ACCESS_TABLE = /*ACCESS-BEGIN*/{');
   ok(/^export const ACCESS_TABLE = \/\*ACCESS-BEGIN\*\/\{$/m.test(ACCESS_SRC), 'access.js: export const ACCESS_TABLE = /*ACCESS-BEGIN*/{');
 });
@@ -16148,7 +16152,7 @@ test('positions: every position and every section is in the table, and the secti
   const ws = slice('WORKSPACES');
   const pageSecs = [...ws.matchAll(/\{ id: '([a-z]+)', label: '[^']*' \}/g)].map((m) => m[1]);
   ok(pageSecs.length >= 19, 'too few WORKSPACES sections read: ' + pageSecs);
-  eq(t.sections.slice().sort(), pageSecs.concat(['camping', 'attendance', 'calendar.denmeeting']).sort(), 'the sections vs WORKSPACES');
+  eq(t.sections.slice().sort(), pageSecs.concat(['camping', 'attendance', 'calendar.denmeeting', 'deposits']).sort(), 'the sections vs WORKSPACES');
   eq(t.denMeetingFields, ['adventure', 'denAdv', 'note', 'noteInternal'], 'what a den leader may change on a den meeting');
 });
 
@@ -16220,6 +16224,8 @@ atest('positions: the table is the plan\'s matrix, assistants are their principa
     joining: 'ERRRRRRE' + 'RRRRR', storefronts: 'RRRRERRR' + 'RRRRR', totals: 'RRRRERRR' + 'RRRRR', rewards: 'RRRRERRR' + 'RRRRR',
     inventory: 'RRHREHHH' + 'HHHHH', council: 'RRHREHHH' + 'HHHHH',
     budget: 'ERRERRRR' + 'RRRRR', ledger: 'ERHERHHH' + 'HHHHH', dues: 'ERHERHHH' + 'HHHHH', fundraisers: 'ERHERHHH' + 'HHHHH',
+    // Deposits (Keith, 2026-10-02): the treasurer, the chair and the kernel; hidden where the ledger is.
+    deposits: 'ERHEEHHH' + 'HHHHH',
     sharing: 'RRRRRRRR' + 'RRRRR', people: 'ERHRRRRR' + 'RRRRR', season: 'EERRRRRR' + 'RRRRR'
   };
   eq(cols.concat(['asstcub', 'asstden', 'parent']).sort(), A.POSITIONS.slice().sort(), 'the matrix covers every position');
@@ -16230,6 +16236,16 @@ atest('positions: the table is the plan\'s matrix, assistants are their principa
   eq(A.ACCESS.asstden, A.ACCESS.denleader, 'the Assistant Den Leader is the Den Leader');
   ok(A.SECTIONS.every((s) => A.ACCESS.parent[s] === 'hidden'), 'a parent position sees a section');
   eq(Object.keys(A.ACCESS), A.POSITIONS, 'ACCESS has every position');
+  // The actions (Keith, 2026-10-02). Verify a shift report and record cash collected: the leaders at the
+  // booth, never a parent. Undo an accept: the kernel, the chair, the treasurer (and the accepter and an
+  // admin, which the endpoint adds).
+  eq(Object.keys(ACCESS_JSON().actions), ['shiftVerify', 'shiftUndo'], 'the actions');
+  eq(ACCESS_JSON().actions.shiftVerify.slice().sort(), ['asstcub', 'asstden', 'chair', 'cubmaster', 'denleader', 'kernel', 'treasurer'], 'shiftVerify');
+  eq(ACCESS_JSON().actions.shiftUndo.slice().sort(), ['chair', 'kernel', 'treasurer'], 'shiftUndo');
+  const acts = (role, ps) => A.effectiveActions(role, ps);
+  eq([acts('admin', []), acts('leader', ['denleader']), acts('leader', ['kernel']), acts('leader', ['comms', 'parent']), acts('editor', ['kernel']), acts('parent', ['parent'])],
+    [{ shiftVerify: true, shiftUndo: true }, { shiftVerify: true, shiftUndo: false }, { shiftVerify: true, shiftUndo: true }, { shiftVerify: false, shiftUndo: false },
+      { shiftVerify: false, shiftUndo: false }, { shiftVerify: false, shiftUndo: false }], 'effectiveActions');
 });
 
 atest('positions: effectiveAccess — admin edits all, a retired editor or viewer only reads, a leader gets the most of their positions', async () => {
@@ -16694,6 +16710,153 @@ atest('positions guard: a council settlement written below an admin is the calle
   eq((await ws.put('lead_treasurer', withBook({}))).status, 200, 'a treasurer taking back the chair\'s');
   eq((await ws.put('lead_treasurer', withBook({ councilSettled: cs('uid-lead-chair'), openingCents: 5 }))).status, 200, 'the book changed, the settlement left as it was');
   eq((await ws.put('owner', withBook({ councilSettled: cs('uid-lead-kernel') }))).status, 200, 'an admin writes what they like');
+});
+
+/* ---- positions: shift reports and deposits by position (Keith, 2026-10-02) ---- */
+
+atest('positions shift reports: a leader sends; the booth leaders accept (shiftVerify), never a read-only position, and the write re-checks the position', async () => {
+  const w = await srWorld();
+  for (const p of ['denleader', 'kernel', 'treasurer', 'chair', 'comms', 'secretary']) seedLeader(w, 'lead_' + p, [p]);
+  // Any leader sends one, as any approved member does.
+  const sent = await w.report('lead_comms', { blockId: 'b2' });
+  eq(sent.status, 200, 'a Communications leader sending a report');
+  const r1 = (await w.report('parent')).body.report.id;
+  for (const who of ['lead_comms', 'lead_secretary', 'editor', 'viewer', 'parent']) {
+    denied(await w.act(who, r1, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true }), who + ' accepting');
+    denied(await w.act(who, r1, { action: 'return', reviewNote: 'Recount' }), who + ' sending back');
+  }
+  eq((await w.act('lead_denleader', r1, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'a den leader accepts');
+  eq(w.one('SELECT accepted_by_uid FROM shift_reports WHERE id = ?', r1).accepted_by_uid, 'uid-lead-denleader', 'the accepter');
+  // A leader reads every report, as leaders do.
+  eq((await w.reports('lead_comms')).body.reports.length, 2, 'a read-only leader reads every report');
+  // The write re-checks the position: one taken away between the check and the write writes nothing.
+  const r3 = (await w.report('parent', { blockId: 'b3' })).body.report.id;
+  const orig = w.db.batch;
+  w.db.batch = function (list) { w.db.batch = orig; w.db.raw.prepare("DELETE FROM member_positions WHERE uid = 'uid-lead-kernel'").run(); return orig.call(w.db, list); };
+  denied(await w.act('lead_kernel', r3, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true }), 'a kernel whose position went mid-request');
+  eq(w.one('SELECT status FROM shift_reports WHERE id = ?', r3).status, 'submitted', 'the report after');
+  // The rule helpers.
+  const R = API.rules;
+  eq([R.canReviewShiftReport('admin', []), R.canReviewShiftReport('leader', ['asstden']), R.canReviewShiftReport('leader', ['trainer']),
+    R.canReviewShiftReport('editor', ['kernel']), R.canReviewShiftReport('parent', ['parent']), R.canSubmitShiftReport('leader')],
+    [true, true, false, false, false, true], 'canReviewShiftReport, canSubmitShiftReport');
+  eq([R.canUndoShiftReport('leader', ['denleader'], 'u1', ['u1']), R.canUndoShiftReport('leader', ['denleader'], 'u1', ['u2']),
+    R.canUndoShiftReport('leader', ['treasurer'], 'u1', ['u2']), R.canUndoShiftReport('leader', ['comms'], 'u1', ['u1']), R.canUndoShiftReport('admin', [], 'u1', [null])],
+    [true, false, true, false, true], 'canUndoShiftReport');
+  // The page's list of who may send is the server's.
+  eq(/  var SHIFT_REPORT_ROLES = (\[[^\]]*\]);/.exec(SCRIPT)[1], /export const SUBMIT_ROLES = (\[[^\]]*\]);/.exec(readFileSync(join(ROOT, 'functions/api/pack/[id]/shift-reports/index.js'), 'utf8'))[1],
+    'SHIFT_REPORT_ROLES vs SUBMIT_ROLES');
+});
+
+atest('positions shift reports: an accept is taken back by the accepter or the undo list (kernel, chair, treasurer, admin), with a reason; so is what became of the cash', async () => {
+  const w = await srWorld();
+  for (const [who, ps] of [['lead_denleader', ['denleader']], ['lead_asstden', ['asstden']], ['lead_kernel', ['kernel']], ['lead_treasurer', ['treasurer']], ['lead_chair', ['chair']]]) seedLeader(w, who, ps);
+  const accepted = async (block, by, salesCash) => {
+    const rid = (await w.report('parent', Object.assign({ blockId: block }, salesCash ? { salesCashCents: salesCash } : {}))).body.report.id;
+    eq((await w.act(by, rid, Object.assign({ action: 'accept', teCents: 12345, cashCents: 2500, collected: true }, salesCash ? { salesCashCents: salesCash } : {}))).status, 200, by + ' accepting on ' + block);
+    return rid;
+  };
+  const back = (who, rid, note) => w.act(who, rid, { action: 'return', reviewNote: note === undefined ? 'Wrong block' : note });
+  const r1 = await accepted('b1', 'lead_denleader');
+  denied(await back('lead_asstden', r1), 'another den leader taking the accept back');
+  eq((await back('lead_denleader', r1, '')).body.reason, 'review-note', 'the accepter, with no reason');
+  eq((await back('lead_denleader', r1)).body.report.status, 'returned', 'the accepter taking it back');
+  for (const [block, who] of [['b2', 'lead_kernel'], ['b3', 'lead_treasurer'], ['b4', 'lead_chair'], ['b5', 'owner']]) {
+    const rid = await accepted(block, 'lead_asstden');
+    eq((await back(who, rid)).body.report.status, 'returned', who + ' taking back a den leader\'s accept');
+  }
+  const audit = w.audit('shift.return');
+  eq(audit.length, 5, 'each take-back audited');
+  eq(JSON.parse(audit[0].detail).from, 'accepted', 'the audit says it was accepted');
+  // A report still waiting is any verifier's to send back.
+  const wait = (await w.report('parent', { blockId: 'b6' })).body.report.id;
+  eq((await back('lead_asstden', wait)).status, 200, 'a den leader sending back a waiting report');
+  // The cash from sales: recorded by any verifier; undone by its recorder, the accepter, or the undo list.
+  const r7 = await accepted('b7', 'lead_denleader', 300);
+  const cash = (who, outcome) => w.act(who, r7, { action: 'salescash', outcome, salesCashCents: 300 });
+  eq((await cash('lead_asstden', 'collected')).body.report.salesCashOutcome, 'collected', 'a den leader recording it collected');
+  eq((await cash('lead_denleader', null)).status, 200, 'the accepter undoing it');
+  eq((await cash('lead_asstden', 'converted')).status, 200, 'recorded again');
+  eq((await cash('lead_asstden', null)).status, 200, 'its recorder undoing it');
+  eq((await cash('lead_asstden', 'collected')).status, 200, 'and again');
+  w.db.raw.prepare("UPDATE shift_reports SET accepted_by_uid = 'uid-owner' WHERE id = ?").run(r7);   // someone else's accept, from here on
+  w.db.raw.prepare("UPDATE shift_reports SET sales_cash_by_uid = 'uid-admin2' WHERE id = ?").run(r7);
+  denied(await cash('lead_asstden', null), 'a den leader undoing another leader\'s record');
+  eq((await cash('lead_kernel', null)).status, 200, 'the kernel undoing it');
+});
+
+atest('positions guard: a booth leader writes a shift report\'s fields on its block, and nothing else of the storefronts', async () => {
+  const blk = (o) => Object.assign({ id: 'b1', label: '10–12', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }], salesCents: 0, donationsCents: 0,
+    cashCountedBy: '', cashVerifiedBy: '' }, o || {});
+  const sfs = (b, sfo) => [Object.assign({ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [b || blk()] }, sfo || {})];
+  const base = Object.assign(GUARD_BASE(), { storefronts: sfs() });
+  const w = await guardWorld(base);
+  const put = (who, b, sfo) => w.put(who, Object.assign(GUARD_BASE(), { storefronts: sfs(b, sfo) }));
+  const pending = (by, o) => Object.assign({ by, at: 1, te: 12345, cash: 2500, was: { salesCents: 0, donationsCents: 0 }, wrote: { counted: 'Ada', verified: 'Me' } }, o || {});
+  const accept = (by) => blk({ salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Ada', cashVerifiedBy: 'Me', reportId: 'r1', reportFrom: 'Ada', reportApprovedBy: 'Me',
+    reportCollected: true, reportPending: pending(by), salesCash: [{ reportId: 'r1', cents: 300, from: 'Ada', outcome: null }] });
+  eq((await put('lead_denleader', accept('uid-lead-denleader'))).status, 200, 'a den leader\'s accept on the block');
+  eq((await put('lead_kernel', accept('uid-lead-chair'))).status, 200, 'the kernel edits storefronts: anything');
+  SECTION_403(await put('lead_comms', accept('uid-lead-comms')), ['storefronts'], 'a Communications leader (no shiftVerify)');
+  SECTION_403(await put('lead_denleader', accept('uid-lead-chair')), ['storefronts'], 'a marker in someone else\'s name');
+  SECTION_403(await put('lead_denleader', blk({ salesCents: 99999 })), ['storefronts'], 'the figures, with no accept');
+  SECTION_403(await put('lead_denleader', Object.assign(accept('uid-lead-denleader'), { salesCents: 99999 })), ['storefronts'], 'figures other than the accept\'s');
+  SECTION_403(await put('lead_denleader', Object.assign(accept('uid-lead-denleader'), { label: '9–12' })), ['storefronts'], 'a block\'s other field');
+  SECTION_403(await put('lead_denleader', accept('uid-lead-denleader'), { name: 'Safeway' }), ['storefronts'], 'the storefront\'s name');
+  SECTION_403(await w.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs().concat([{ id: 'sf2', name: 'New', blocks: [] }]) })), ['storefronts'], 'a storefront added');
+  SECTION_403(await w.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: [Object.assign(sfs()[0], { blocks: [blk(), blk({ id: 'b2' })] })] })), ['storefronts'], 'a block added');
+  // From an accept pending on the server: settled (the marker goes, the figures stay) or undone (back to `was`).
+  const wp = await guardWorld(Object.assign(GUARD_BASE(), { storefronts: sfs(accept('uid-lead-asstden')) }));
+  const settled = accept('uid-lead-asstden'); delete settled.reportPending;
+  eq((await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(settled) }))).status, 200, 'settled');
+  eq((await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(blk()) }))).status, 200, 'undone, back to what the block held');
+  SECTION_403(await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(blk({ salesCents: 1 })) })), ['storefronts'], 'undone to other figures');
+  SECTION_403(await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(accept('uid-lead-chair')) })), ['storefronts'], 'the marker handed to someone else');
+  const taken = accept('uid-lead-denleader');
+  eq((await wp.put('lead_denleader', Object.assign(GUARD_BASE(), { storefronts: sfs(taken) }))).status, 200, 'a stuck accept taken over (the marker now this leader\'s)');
+});
+
+atest('positions guard: deposits — the kernel records a storefront deposit, flagged for the treasurer, and sets the deadline; the rest of the ledger stays the treasurer\'s', async () => {
+  const dep = (o) => Object.assign({ id: 'd1', date: '2026-10-05', description: 'Storefront cash donations banked', amountCents: 25000, direction: 'in', lineId: '', method: 'cash',
+    ref: '', source: 'storefront', donor: '', scoutId: '', reconciled: false, depositFor: 'sf1', depositFrom: '', depositTo: '', enteredBy: 'K', enteredAt: 'x',
+    enteredByUid: 'uid-lead-kernel', approvedBy: '', approvedAt: '', approvedByUid: '', depositReview: true }, o || {});
+  const w = await guardWorld(GUARD_BASE());
+  const withLedger = (rows, more) => Object.assign(GUARD_BASE(), { ledger: GUARD_BASE().ledger.concat(rows) }, more || {});
+  eq((await w.put('lead_kernel', withLedger([dep()]))).status, 200, 'the kernel recording a deposit');
+  for (const [what, row] of [['not flagged for review', dep({ depositReview: undefined })], ['in someone else\'s name', dep({ enteredByUid: 'uid-lead-treasurer' })],
+    ['money out', dep({ direction: 'out' })], ['not storefront cash', dep({ source: 'donation' })], ['already ticked', dep({ reconciled: true })],
+    ['on a statement', dep({ statementId: 'st-1' })], ['approved', dep({ approvedByUid: 'uid-lead-kernel' })], ['a family\'s payment', dep({ scoutId: 's1' })]]) {
+    SECTION_403(await w.put('lead_kernel', withLedger([JSON.parse(JSON.stringify(row))])), ['ledger'], 'a kernel\'s deposit ' + what);
+  }
+  SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledger: [{ id: 'L1', amountCents: 600 }, dep()] })), ['ledger'], 'a kernel changing a row there');
+  SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledger: [dep()] })), ['ledger'], 'a kernel removing a row');
+  SECTION_403(await w.put('lead_denleader', withLedger([dep({ enteredByUid: 'uid-lead-denleader' })])), ['ledger'], 'a den leader recording a deposit');
+  eq((await w.put('lead_treasurer', withLedger([dep({ enteredByUid: 'uid-lead-treasurer', depositReview: undefined })]))).status, 200, 'the treasurer, no flag needed');
+  // Its 'add' line in the log (a deposit dated in a reconciled period): the kernel's own, for the deposit it adds.
+  const add = (row, byUid) => ({ id: 'ev-add', at: '2026-10-05T12:00:00.000Z', by: 'K', byUid, dev: 'd', row, op: 'add', why: 'Dated inside the period reconciled' });
+  eq((await w.put('lead_kernel', withLedger([dep()], { ledgerLog: [add('d1', 'uid-lead-kernel')] }))).status, 200, 'the deposit and its add line');
+  SECTION_403(await w.put('lead_kernel', withLedger([dep()], { ledgerLog: [add('L1', 'uid-lead-kernel')] })), ['ledger'], 'an add line for another row');
+  SECTION_403(await w.put('lead_kernel', Object.assign(GUARD_BASE(), { ledgerLog: [add('d1', 'uid-lead-kernel')] })), ['ledger'], 'an add line with no deposit');
+  // The deadline: the deposits sub-section, logged on the book by whoever sets it.
+  const days = (who, uid) => w.put(who, Object.assign(GUARD_BASE(), { depositDays: 10,
+    ledgerLog: [{ id: 'ev-dd', at: '2026-10-05T12:00:00.000Z', by: 'X', byUid: uid, dev: 'd', row: 'book', op: 'edit', f: { depositDays: [7, 10] } }] }));
+  for (const who of ['lead_kernel', 'lead_treasurer', 'lead_chair']) eq((await days(who, 'uid-' + who.replace('_', '-'))).status, 200, who + ' setting the deposit deadline');
+  SECTION_403(await days('lead_cubmaster', 'uid-lead-cubmaster'), ['ledger', 'deposits'], 'the Cubmaster setting it');
+});
+
+test('positions: a kernel\'s deposit keeps its review flag through the page; a settlement names the Chair who approved it', () => {
+  const x = sandbox(['normalizeLedgerRow', 'stableRowId', 'depositForIds', 'DEPOSIT_FOR_MAX', 'LEDGER_METHODS', 'LEDGER_SOURCES', 'councilSettledNormal', 'councilApproverClean',
+    'COUNCIL_SETTLE_HOW', 'ledgerStampClean']);
+  const J = (v) => JSON.parse(JSON.stringify(v));
+  const row = (o) => { const e = Object.assign({ id: 'd1', direction: 'in', source: 'storefront', amountCents: 100 }, o); x.normalizeLedgerRow(e, 'nl'); return J(e); };
+  eq([row({ depositReview: true }).depositReview, 'depositReview' in row({ depositReview: 'yes' }), 'depositReview' in row({ depositReview: true, source: 'donation' })],
+    [true, false, false], 'the flag: true on a storefront deposit, or gone');
+  const S = { on: '2026-12-02', how: 'paid', by: 'Pat', byUid: 'u1', at: '2026-12-02T10:00:00.000Z' };
+  eq([J(x.councilSettledNormal(Object.assign({}, S, { approvedBy: '  Jordan   Lee ' }))).approvedBy, 'approvedBy' in J(x.councilSettledNormal(S)),
+    J(x.councilSettledNormal(Object.assign({}, S, { approvedBy: 'chair@example.com' }))).approvedBy, 'approvedBy' in J(x.councilSettledNormal(Object.assign({}, S, { approvedBy: 7 })))],
+    ['Jordan Lee', false, 'a signed-in leader', false], 'approvedBy: one line, never an email, absent when there is none');
+  ok(/'Approved by ' \+ settled\.approvedBy \+ ', Committee Chair\. '/.test(slice('councilMoneyLines')), 'the Reconcile card names the Chair');
+  ok(/data-ch="settle-approved"/.test(slice('councilMoneyHtml')), 'the form asks for the Chair');
 });
 
 /* ================================================================
@@ -33746,7 +33909,7 @@ test('item 11: DESIGN-money.md has the posting rule, and the format was raised f
    actual. Made-up data throughout.
    ================================================================ */
 const KC_FNS = declClosure(['councilKeptTwiceText', 'councilEstimateText', 'ledgerIncomeCents', 'lineActualCents', 'lineIncomeCents', 'entryWantsLine', 'ledgerBalance', 'reconcileTotals', 'commissionLookalikes',
-  'councilMoneyCheck', 'councilMoneyLines', 'councilSettledNormal', 'councilSettledText', 'councilSettlement'], []);
+  'councilMoneyCheck', 'councilMoneyLines', 'councilSettledNormal', 'councilApproverClean', 'councilSettledText', 'councilSettlement'], []);
 const kcRow = (id, cents, dir, o) => c8row(id, (o && o.date) || '2026-11-20', cents, dir, Object.assign({ source: 'council' }, o || {}));
 
 test('council money: neither pack income nor a pack cost, either way, on a line or not; in the bank and the statement', () => {
@@ -33841,7 +34004,8 @@ test('council money: settling makes the commission actual, banked − paid + com
 
 test('council money: the settle step is an editor’s, logged on the book, taken back with two taps, and gone at close-out', () => {
   const go = /if \(act === 'council-settle-go'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
-  ok(/canEdit\(\)/.test(go) && /state\.book\.closedAt/.test(go) && /state\.book\.councilSettled = \{ on: sd\.on, how: sd\.how, by: ledgerActor\(\), byUid: ledgerActorUid\(\), at: new Date\(\)\.toISOString\(\) \};/.test(go) &&
+  ok(/canEdit\(\)/.test(go) && /state\.book\.closedAt/.test(go) && /state\.book\.councilSettled = \{ on: sd\.on, how: sd\.how, by: ledgerActor\(\), byUid: ledgerActorUid\(\), at: new Date\(\)\.toISOString\(\),\s+approvedBy: councilApproverClean\(sd\.approvedBy\) \};/.test(go) &&
+    /if \(!councilApproverClean\(sd\.approvedBy\)\) \{ showToast\('Enter the name of the Committee Chair who approved the settlement\.'\); return; \}/.test(go) &&
     /logLedger\('settle', 'book', \{ f: \{ councilSettled: \[sdWas \|\| null, councilSettledText\(state\.book\.councilSettled\)\] \} \}\)/.test(go), 'Mark settled');
   const un = /if \(act === 'council-unsettle'\) \{[\s\S]*?\n    \}/.exec(SCRIPT)[0];
   ok(/arm\(act,/.test(un) && /logLedger\('unsettle', 'book'/.test(un) && /delete state\.book\.councilSettled;/.test(un), 'Not settled after all');
@@ -33902,7 +34066,7 @@ test('deposit deadline: what each deposit covers, named storefronts first, then 
    unsettle event decides, whichever device saves last. Made-up data.
    ================================================================ */
 test('council settlement merge: the newest settle or unsettle event decides, either way round, and junk stamps are dropped', () => {
-  const x = sandbox(['councilSettledMerged', 'councilSettledNormal', 'councilSettledText', 'COUNCIL_SETTLE_HOW', 'COUNCIL_SETTLE_LABELS', 'arrOf', 'ledgerStampClean']);
+  const x = sandbox(['councilSettledMerged', 'councilSettledNormal', 'councilApproverClean', 'councilSettledText', 'COUNCIL_SETTLE_HOW', 'COUNCIL_SETTLE_LABELS', 'arrOf', 'ledgerStampClean']);
   const S = { on: '2026-12-02', how: 'paid', by: 'Pat', byUid: 'u1', at: '2026-12-02T10:00:00.000Z' };
   const S2 = { on: '2026-12-05', how: 'payout', by: 'Sam', byUid: 'u2', at: '2026-12-05T10:00:00.000Z' };
   const ev = (id, op, at, s) => ({ id: 'lg-' + id, at, op, row: 'book', f: { councilSettled: op === 'settle' ? [null, x.councilSettledText(s)] : [x.councilSettledText(s), null] } });

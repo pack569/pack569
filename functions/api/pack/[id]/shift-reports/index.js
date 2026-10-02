@@ -1,4 +1,4 @@
-// GET  /api/pack/:id/shift-reports   the storefront shift reports       (admin, editor, viewer, parent)
+// GET  /api/pack/:id/shift-reports   the storefront shift reports       (admin, editor, viewer, leader, parent)
 //        leaders: { reports: [every report, in full], others: [], myShifts }
 //        a parent: { reports: [their own, in full], others: [{ sfId, blockId, status }], myShifts }
 //        myShifts: [{ sfId, blockId }], the caller's own scouts' shifts (see myShiftsAndLink below);
@@ -9,7 +9,7 @@
 //        The parent preview asks for this, so a leader who is also a parent sees, and sends, as
 //        one (Keith, 2026-10-01). It only ever narrows what this role could read anyway.
 // POST /api/pack/:id/shift-reports   send one: { sfId, blockId, teCents, cashCents, salesCashCents?, note?, attest: true }
-//                                     (admin, editor, viewer, parent — never pending)
+//                                     (admin, editor, viewer, leader, parent — never pending)
 //
 // Not a Part C rule: Firestore never had shift reports (migrations/0003_shift_reports.sql says
 // what they are for). SETUP.md Part C, "Shift reports", is the same rules in prose.
@@ -39,6 +39,7 @@
 
 import { route, json, readObject, refuse, forbidden, badRequest, shiftReported, tooManyReports } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
+import { ACCESS_TABLE } from '../../../../_lib/access.js';
 import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, cleanReportNote, packToday, shiftOfView, shiftNeedsConfirm, reportSalesCash,
   shiftConfirmers, shiftParentUids, familiesOf, canConfirmShiftReport, daysBetween, SHIFT_REPORT_DAYS, SHIFT_REPORT_MAX_OPEN, SHIFT_REPORT_MAX_PER_DAY,
   SHIFT_REPORT_LEADER_DAYS } from '../../../../_lib/rules.js';
@@ -130,7 +131,20 @@ const heldAs = (h) => shiftReported(h && h.status === 'accepted' ? 'accepted' : 
 // a member removed or sent back to pending between the role check and the write writes nothing).
 export const STILL_MEMBER = (roles) => 'EXISTS (SELECT 1 FROM members WHERE pack_id = ? AND uid = ? AND role IN (' +
   roles.map(() => '?').join(', ') + '))';
-export const SUBMIT_ROLES = ['admin', 'editor', 'viewer', 'parent'];
+export const SUBMIT_ROLES = ['admin', 'editor', 'viewer', 'leader', 'parent'];
+// The caller still holds an action of access.js (shiftVerify, shiftUndo) at the moment of the write:
+// an admin, or a leader holding one of the positions it lists (member_positions, which only an admin
+// writes). The SQL twin of rules.js canReviewShiftReport and canUndoShiftReport.
+export const STILL_HOLDS = (action) => "EXISTS (SELECT 1 FROM members m WHERE m.pack_id = ? AND m.uid = ? AND (m.role = 'admin' OR " +
+  "(m.role = 'leader' AND EXISTS (SELECT 1 FROM member_positions mp WHERE mp.pack_id = m.pack_id AND mp.uid = m.uid AND mp.position IN (" +
+  ACCESS_TABLE.actions[action].map(() => '?').join(', ') + ')))))';
+export const holdsArgs = (action, packId, uid) => [packId, uid, ...ACCESS_TABLE.actions[action]];
+// A write's gate: its SQL (true while the caller may still do this) and the values it binds.
+export const memberGate = (packId, uid, roles) => ({ sql: STILL_MEMBER(roles), args: [packId, uid, ...roles] });
+export const holdsGate = (packId, uid, ...actions) => ({
+  sql: '(' + actions.map((a) => STILL_HOLDS(a)).join(' OR ') + ')',
+  args: [].concat(...actions.map((a) => holdsArgs(a, packId, uid)))
+});
 
 // Your scout's shifts first (Keith, 2026-10-01): the published storefront shifts in the reporting
 // window (today or up to SHIFT_REPORT_DAYS back, as the family's card lists them) that have a scout

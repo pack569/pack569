@@ -28,7 +28,10 @@
 // entry against the caller's own uid, whoever may edit their section: the two logs are
 // append-only and a line added is the caller's own (syncLog for anyone, ledgerLog for the ledger's
 // editors, or a setting's for one who changed it); a statement there stays as it is and one added
-// is the caller's; a council settlement written is the caller's. An admin's save is not compared.
+// is the caller's; a council settlement written is the caller's. Two slices of a section a leader may
+// write without editing it: a shift report's fields on a storefront block (shiftVerify: the
+// accept, its undo, its settle), and a deposit of storefront cash added to the ledger, flagged for
+// the treasurer (the 'deposits' sub-section). An admin's save is not compared.
 // A save from a stale rev is the 409 it always was, before anything is compared.
 //
 // AWAITING IMPORT (production, OWNER_MODE fixed): the pack record is created only by the
@@ -40,7 +43,7 @@
 import { route, json, readText, refuse, forbidden, forbiddenSections, badRequest, awaitingImport, MAX_STATE_BYTES } from '../../../_lib/http.js';
 import { withMember, fixedOwnerMode } from '../../../_lib/pack.js';
 import { canReadPack, canWritePack, isAdmin } from '../../../_lib/rules.js';
-import { effectiveAccess, refusedSections, SECTIONS } from '../../../_lib/access.js';
+import { effectiveAccess, effectiveActions, refusedSections, SECTIONS } from '../../../_lib/access.js';
 
 function stateOut(row) {
   return row
@@ -80,7 +83,7 @@ async function put({ request, env, db, packId, role, positions, user }) {
     if (cur || base === 0) {
       let stored = {};
       if (cur) { try { stored = JSON.parse(cur.json); } catch (e) { stored = {}; } }
-      const refused = refusedSections(stored, parsed, effectiveAccess(role, positions), user.uid);
+      const refused = refusedSections(stored, parsed, effectiveAccess(role, positions), user.uid, effectiveActions(role, positions));
       if (refused.length) return forbiddenSections(sectionOrder(refused));
     }
   }

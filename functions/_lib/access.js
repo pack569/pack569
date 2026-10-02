@@ -20,9 +20,12 @@
 // The table between the markers is JSON, and index.html carries a byte-identical copy between the
 // same markers (var ACCESS_TABLE). The harness fails if the two differ. Change both or neither.
 //   positions         the positions, in the order the page lists them
-//   sections          every section of the app (index.html WORKSPACES), plus two sub-sections:
-//                     'attendance' (the calendar's attendance marks) and 'calendar.denmeeting'
-//                     (on a den meeting only: its adventure and notes — see denMeetingChangeOk)
+//   sections          every section of the app (index.html WORKSPACES), plus three sub-sections:
+//                     'attendance' (the calendar's attendance marks), 'calendar.denmeeting' (on a
+//                     den meeting only: its adventure and notes — see denMeetingChangeOk) and
+//                     'deposits' (banking storefront cash, and the deposit deadline: the
+//                     treasurer, the chair, and the kernel, whose deposits the treasurer reviews —
+//                     see depositRowsOk)
 //   denMeetingFields  the fields 'calendar.denmeeting' may change on a kind 'den' event
 //   access            per position: its default level, and the sections it edits or cannot see
 //   keyOwner          each top-level key of the pack record -> its section; a list means any of
@@ -37,6 +40,14 @@
 //                     record (logSettingEdit's `name`, for the inventory's own settings) -> its
 //                     section. With keyOwner, it says whose change a book 'edit' line records,
 //                     so a leader who changes a setting may log it (ledgerLogOk).
+//   actions           things a leader does that are not editing a section, each with the
+//                     positions that may (an admin always may): shiftVerify, accepting a family's
+//                     shift report and recording the cash collected (the leaders at the booth,
+//                     Keith 2026-10-02: never a parent); shiftUndo, taking an accept back, or what
+//                     became of the cash (the leader who did it may too: the endpoint knows who)
+//   blockReportFields the fields of a storefront block that accepting a shift report writes; a
+//                     shiftVerify holder may change these, and no others, without editing
+//                     storefronts (storefrontReportChangeOk)
 export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
     "positions": [
       {"id": "cubmaster", "label": "Cubmaster"},
@@ -56,24 +67,24 @@ export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
       {"id": "asstden", "label": "Assistant Den Leader"},
       {"id": "parent", "label": "Parent"}
     ],
-    "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "dues", "fundraisers", "sharing", "people", "season"],
+    "sections": ["home", "calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "roster", "advancement", "joining", "storefronts", "totals", "rewards", "inventory", "council", "budget", "ledger", "deposits", "dues", "fundraisers", "sharing", "people", "season"],
     "denMeetingFields": ["adventure", "denAdv", "note", "noteInternal"],
     "access": {
       "cubmaster": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
       "asstcub": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "denplan", "derby", "camping", "advancement", "season"], "hidden": []},
-      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "dues", "fundraisers", "people", "season"], "hidden": []},
-      "treasurer": {"default": "read", "edit": ["budget", "ledger", "dues", "fundraisers"], "hidden": []},
-      "secretary": {"default": "read", "edit": ["roster"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "kernel": {"default": "read", "edit": ["storefronts", "totals", "rewards", "inventory", "council"], "hidden": []},
-      "advancement": {"default": "read", "edit": ["advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "activities": {"default": "read", "edit": ["calendar", "calendar.denmeeting"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "membership": {"default": "read", "edit": ["roster", "joining"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "outdoors": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "derbychair": {"default": "read", "edit": ["derby"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "comms": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "trainer": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers"]},
-      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
-      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "dues", "fundraisers", "people"]},
+      "chair": {"default": "read", "edit": ["calendar", "calendar.denmeeting", "attendance", "derby", "joining", "budget", "ledger", "deposits", "dues", "fundraisers", "people", "season"], "hidden": []},
+      "treasurer": {"default": "read", "edit": ["budget", "ledger", "deposits", "dues", "fundraisers"], "hidden": []},
+      "secretary": {"default": "read", "edit": ["roster"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "kernel": {"default": "read", "edit": ["storefronts", "totals", "rewards", "inventory", "council", "deposits"], "hidden": []},
+      "advancement": {"default": "read", "edit": ["advancement"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "activities": {"default": "read", "edit": ["calendar", "calendar.denmeeting"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "membership": {"default": "read", "edit": ["roster", "joining"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "outdoors": {"default": "read", "edit": ["camping"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "derbychair": {"default": "read", "edit": ["derby"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "comms": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "trainer": {"default": "read", "edit": [], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers"]},
+      "denleader": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers", "people"]},
+      "asstden": {"default": "read", "edit": ["calendar.denmeeting", "attendance", "denplan", "advancement"], "hidden": ["inventory", "council", "ledger", "deposits", "dues", "fundraisers", "people"]},
       "parent": {"default": "hidden", "edit": [], "hidden": []}
     },
     "keyOwner": {
@@ -121,7 +132,7 @@ export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
       "ledgerAside": "ledger",
       "ledgerLog": "ledger",
       "statements": "ledger",
-      "depositDays": "ledger",
+      "depositDays": "deposits",
       "charges": "dues",
       "collected": "dues",
       "fundraisers": "fundraisers",
@@ -134,7 +145,13 @@ export const ACCESS_TABLE = /*ACCESS-BEGIN*/{
       "closedGone": "admin"
     },
     "goneOwner": {"entries": "totals", "imports": "totals", "ledger": "ledger", "distributions": "inventory", "products": "inventory", "sales": "fundraisers", "fundraisers": "fundraisers", "scouts": "roster"},
-    "bookLogOwner": {"orderTotalCents": "inventory", "invCommissionPct": "inventory"}
+    "bookLogOwner": {"orderTotalCents": "inventory", "invCommissionPct": "inventory"},
+    "actions": {
+      "shiftVerify": ["cubmaster", "asstcub", "chair", "treasurer", "kernel", "denleader", "asstden"],
+      "shiftUndo": ["chair", "treasurer", "kernel"]
+    },
+    "blockReportFields": ["salesCents", "donationsCents", "cashCountedBy", "cashVerifiedBy", "reportId", "reportFrom", "reportApprovedBy", "reportConfirmedBy",
+      "reportOverride", "reportOverrideNote", "reportCollected", "reportReturned", "reportPending", "salesCash"]
   }/*ACCESS-END*/;
 
 export const LEVELS = ['hidden', 'read', 'edit'];
@@ -142,6 +159,8 @@ export const POSITIONS = ACCESS_TABLE.positions.map((p) => p.id);
 export const SECTIONS = ACCESS_TABLE.sections.slice();
 export const BUCKETS = ['admin', 'shared'];
 export const DEN_MEETING_FIELDS = ACCESS_TABLE.denMeetingFields.slice();
+export const ACTIONS = Object.keys(ACCESS_TABLE.actions);
+export const BLOCK_REPORT_FIELDS = ACCESS_TABLE.blockReportFields.slice();
 
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
@@ -201,6 +220,17 @@ export function effectiveAccess(role, positions) {
   out.admin = 'read';
   return out;
 }
+
+// What a member may do of the table's actions: action -> true/false. An admin may do each; a
+// leader, an action one of their positions lists; nobody else (the retired editor included).
+export function effectiveActions(role, positions) {
+  const out = {}, held = Array.isArray(positions) ? positions : [];
+  ACTIONS.forEach((a) => {
+    out[a] = role === 'admin' || (role === 'leader' && held.some((p) => typeof p === 'string' && ACCESS_TABLE.actions[a].indexOf(p) !== -1));
+  });
+  return out;
+}
+export const canDo = (role, positions, action) => effectiveActions(role, positions)[action] === true;
 
 // Whether `access` (effectiveAccess) may edit what `owner` names (a section, a bucket, or a list
 // of sections, any of which will do).
@@ -331,11 +361,14 @@ export const syncLogOk = (before, after, uid) => appendOnlyOk(before, after, uid
 // whose every field is a setting they may edit (ownerOfBookLogField). Commission, goals, the wagon
 // date and the deposit days are logged on the book; the people who may set them are not all
 // ledger editors (logSettingEdit and its kin, index.html).
-export function ledgerLogOk(before, after, uid, access) {
-  const ledger = canEditOwner(access, 'ledger');
+// And a deposit holder may log the 'add' of a deposit they add in the same save (`deposits`, its ids):
+// the ledger's add path logs one when the date is in a reconciled or closed period.
+export function ledgerLogOk(before, after, uid, access, deposits) {
+  const ledger = canEditOwner(access, 'ledger'), added = Array.isArray(deposits) ? deposits : [];
   return appendOnlyOk(before, after, uid, LEDGER_LOG_CAP, ledger ? null : (e) =>
-    e.op === 'edit' && e.row === 'book' && plain(e.f) && Object.keys(e.f).length > 0 &&
-    Object.keys(e.f).every((k) => canEditOwner(access, ownerOfBookLogField(k))));
+    (e.op === 'add' && added.indexOf(e.row) !== -1) ||
+    (e.op === 'edit' && e.row === 'book' && plain(e.f) && Object.keys(e.f).length > 0 &&
+      Object.keys(e.f).every((k) => canEditOwner(access, ownerOfBookLogField(k)))));
 }
 
 // A statement's parts set once after it is written (index.html statementOnceGroups): its review,
@@ -370,14 +403,95 @@ export function councilSettledOk(beforeBook, afterBook, uid) {
   return plain(a) && typeof uid === 'string' && !!uid && a.byUid === uid;
 }
 
+// ---- Shift reports and deposits: a slice of a section, for a leader who does not edit it ----
+
+// state.storefronts changed only as accepting (or undoing, settling, or sending back) a shift report
+// changes it, for a shiftVerify holder who does not edit storefronts (Keith, 2026-10-02): the same
+// storefronts, by id, each as it was but for its blocks; the same blocks, by id, each as it was but
+// for BLOCK_REPORT_FIELDS. And of those, the two figures change only to what an accept wrote
+// (the block's reportPending.te and .cash, a marker the caller holds) or back to what the block held
+// before it (a marker taken away: its `was`); a marker written or changed is the caller's own (by).
+export function storefrontReportChangeOk(before, after, uid) {
+  if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return false;
+  const byId = (list) => {
+    const m = Object.create(null);
+    for (const x of list) { if (!plain(x) || typeof x.id !== 'string' || !x.id || m[x.id]) return null; m[x.id] = x; }
+    return m;
+  };
+  const was = byId(before), now = byId(after);
+  if (!was || !now) return false;
+  for (const id of Object.keys(was)) {
+    const sb = was[id], sa = now[id];
+    if (!sa) return false;
+    const keys = Object.keys(sb).concat(Object.keys(sa));
+    if (keys.some((k) => k !== 'blocks' && (own(sb, k) !== own(sa, k) || !sameJson(sb[k], sa[k])))) return false;
+    const bb = Array.isArray(sb.blocks) ? sb.blocks : [], ba = Array.isArray(sa.blocks) ? sa.blocks : [];
+    if (own(sb, 'blocks') !== own(sa, 'blocks') || bb.length !== ba.length) return false;
+    const bw = byId(bb), bn = byId(ba);
+    if (!bw || !bn) return false;
+    for (const bid of Object.keys(bw)) {
+      const b = bw[bid], a = bn[bid];
+      if (!a) return false;
+      for (const k of Object.keys(b).concat(Object.keys(a))) {
+        if (BLOCK_REPORT_FIELDS.indexOf(k) === -1 && (own(b, k) !== own(a, k) || !sameJson(b[k], a[k]))) return false;
+      }
+      const pa = plain(a.reportPending) ? a.reportPending : null, pb = plain(b.reportPending) ? b.reportPending : null;
+      if (own(a, 'reportPending') && !sameJson(a.reportPending, b.reportPending) && !(pa && typeof uid === 'string' && uid && pa.by === uid)) return false;
+      const figs = (x) => [x.salesCents || 0, x.donationsCents || 0];
+      if (!sameJson(figs(a), figs(b))) {
+        const accept = pa && pa.by === uid && sameJson(figs(a), [pa.te, pa.cash]);
+        const undo = pb && !pa && plain(pb.was) && sameJson(figs(a), figs(pb.was));
+        if (!accept && !undo) return false;
+      }
+    }
+  }
+  return true;
+}
+
+// A ledger row that is a deposit of storefront cash a 'deposits' holder who does not edit the ledger
+// may add (Keith, 2026-10-02: the kernel records the deposit, the treasurer reviews it). Money in,
+// marked as storefront cash and nobody's payment, entered by the caller, flagged for the treasurer
+// (depositReview: true; the treasurer's edit takes the flag off), and nothing the ledger's own
+// steps set: not ticked or on a statement, not voided, not approved.
+const DEPOSIT_UNSET = ['reconciled', 'reconciledAt', 'statementId', 'off', 'voidReason', 'voidedAt', 'voidedBy', 'voidedByUid',
+  'approvedBy', 'approvedByUid', 'approvedAt', 'tierMakeup', 'scoutId', 'reimbursement'];
+export function depositRowOk(e, uid) {
+  return plain(e) && typeof e.id === 'string' && !!e.id && e.direction === 'in' && e.source === 'storefront' &&
+    typeof e.amountCents === 'number' && typeof uid === 'string' && !!uid && e.enteredByUid === uid && e.depositReview === true &&
+    DEPOSIT_UNSET.every((k) => !e[k]);
+}
+// state.ledger changed by such a leader: every row there still there, as it was (by id), and every row
+// added a deposit (depositRowOk). Returns the ids added, or null when it is anything else.
+export function depositRowsAdded(before, after, uid) {
+  if (!Array.isArray(after)) return null;
+  const was = Object.create(null);
+  (Array.isArray(before) ? before : []).forEach((e) => { if (plain(e) && typeof e.id === 'string') was[e.id] = e; });
+  const seen = Object.create(null), added = [];
+  for (const e of after) {
+    if (!plain(e) || typeof e.id !== 'string' || !e.id || seen[e.id]) return null;
+    seen[e.id] = true;
+    if (own(was, e.id)) { if (!sameJson(was[e.id], e)) return null; continue; }
+    if (!depositRowOk(e, uid)) return null;
+    added.push(e.id);
+  }
+  return Object.keys(was).every((id) => seen[id]) ? added : null;
+}
+
 // The sections (and buckets) a write from `stored` to `next` (both parsed records) changes that
 // `access` may not edit, sorted; [] when it may make every change in it. `uid` is the caller's: the
 // logs, the statements and the settlement say who did what, and nobody below an admin may say it
-// for someone else (above). Called only for a caller who is not an admin.
-export function refusedSections(stored, next, access, uid) {
+// for someone else (above). `actions` (effectiveActions) lets a shiftVerify holder write a shift
+// report's fields on the storefronts. Called only for a caller who is not an admin.
+export function refusedSections(stored, next, access, uid, actions) {
   const refused = Object.create(null);
   const refuse = (owner) => { (Array.isArray(owner) ? owner : [owner]).forEach((s) => { refused[s] = true; }); };
   const s = plain(stored) ? stored : {}, n = plain(next) ? next : {};
+  const can = plain(actions) ? actions : {};
+  // A deposit holder who does not edit the ledger: the deposits they add, which their own log lines may name.
+  let deposits = [];
+  if (!canEditOwner(access, 'ledger') && access.deposits === 'edit' && !sameTop(s.ledger, own(s, 'ledger'), n.ledger, own(n, 'ledger'))) {
+    deposits = depositRowsAdded(own(s, 'ledger') ? s.ledger : [], own(n, 'ledger') ? n.ledger : [], uid);
+  }
   const keys = Object.create(null);
   Object.keys(s).concat(Object.keys(n)).forEach((k) => { keys[k] = true; });
   for (const k of Object.keys(keys)) {
@@ -396,7 +510,12 @@ export function refusedSections(stored, next, access, uid) {
     const owner = ownerOfKey(k);
     const was = hasS ? s[k] : [], now = hasN ? n[k] : [];
     // The ledger's log: its own rule, for ledger editors and the setting-changers alike.
-    if (k === 'ledgerLog') { if (!ledgerLogOk(was, now, uid, access)) refuse(owner); continue; }
+    if (k === 'ledgerLog') { if (!ledgerLogOk(was, now, uid, access, deposits || [])) refuse(owner); continue; }
+    if (k === 'ledger' && !canEditOwner(access, owner)) { if (!deposits || !deposits.length) refuse(owner); continue; }
+    if (k === 'storefronts' && !canEditOwner(access, owner)) {
+      if (!(can.shiftVerify === true && storefrontReportChangeOk(was, now, uid))) refuse(owner);
+      continue;
+    }
     if (canEditOwner(access, owner)) {
       if (k === 'syncLog' && !syncLogOk(was, now, uid)) refuse(owner);
       else if (k === 'statements' && !statementsOk(was, now, uid)) refuse(owner);
