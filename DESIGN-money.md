@@ -1544,6 +1544,7 @@ API backend they send them in.
 | Confirming it, where two or more families worked the shift | a parent **from another family** on the shift, never the sender | **the parent app**, "Check and confirm" | the report only |
 | Accepting it | an admin or editor: never the sender, never the parent who confirmed it | **Popcorn · Storefronts**, the block's review card | the block: both figures, `cashCountedBy` = the sender, `cashVerifiedBy` = the confirming parent (two or more families) or the accepting leader who collected and counted the cash (one family), or blank on an override with a reason; `reportApprovedBy` = the accepting leader; `reportId`, `reportFrom` |
 | Sending it back, with a reason the family sees | an admin or editor | the same card | the report only |
+| Correcting an accepted report's figures, with a reason the family sees (Keith, 2026-10-07) | an **admin** only: never the sender, the confirming parent, or the sender's family | the block's "From …'s report" line, **Edit** | the report (server first), then the block's figures, still linked |
 | …or typing the figures in by hand, as before | an admin or editor | the block's money fields | the block |
 
 - **Nothing counts until a leader accepts.** The block carries the figures from the moment a
@@ -1628,6 +1629,41 @@ API backend they send them in.
   corrected report, and accepting that one asks old against new.
 - **Editing by hand after an accept** still works and is recorded the normal way. The block then
   stops saying "From …'s report".
+- **An admin corrects an accepted report** (Keith, 2026-10-07). A family rained out of a
+  storefront sold from a wagon and reported that money as the storefront's totals. Once Trail's
+  End's figures were imported, the same sales counted twice: as wagon sales, which they were, and
+  on the block. Sending the report back is a round trip to the family for a figure the admin
+  already knows, and typing over the block unlinks it from the report and leaves the family's
+  report saying something else. So an admin taps **Edit** on the block's report line, changes the
+  Trail's End amount, the cash donations, or the cash from popcorn sales not converted ($0 is
+  allowed), and writes why. The family reads the reason.
+  - **Server first** (PATCH `amend`), naming the figures the admin was shown. The report keeps
+    its accepted status and takes the new figures. Each correction is kept
+    (`shift_report_amendments`: before, after, reason, who, when) and audited `shift.amend`. The
+    accept's own record never changes. Then the block takes the new figures (`srAmendToBlock`) and
+    **stays linked**, so the scouts' split, the standings and the storefront totals use them, and
+    the history's "Block now differs from report" compares against them.
+  - **Admins only**, by member role (`canAmendShiftReport`), never by job. An editor sends the
+    report back instead. The people kept out are the same as for the accept: the sender, the
+    parent who confirmed it, and anyone in the sender's family.
+  - **Cash from popcorn sales.** If a leader has already marked it collected or converted, its
+    amount stays (the form says so; the server refuses with `sales-cash-recorded`). Otherwise the
+    block's entry for that report follows the correction, and goes away at $0. It still can't be
+    more than the Trail's End amount.
+  - **Every device catches up.** A correction made on another admin's device, or one whose save
+    never landed, reaches a linked block on the next reconcile (`srAmendMirror`). It only does
+    this if the block still holds figures the report held before a correction. An accept still
+    being saved is never corrected under it, and a lost accept found later settles against the
+    figures it was **accepted** with (`srAcceptedFigures`) instead of being undone, then takes
+    the correction.
+  - **Where it shows.** On the block: "Edited by ‹admin›, ‹when›: “‹reason›” (was $X Trail's
+    End)." To the family: "Accepted by ‹leader›. ‹Admin's first name› adjusted the totals:
+    “‹reason›”." with the new figures. In the season's history, the "Edited after accepting"
+    column gives who, when and the figures before, and the reason appears there, or in the CSV only
+    when leaders' reasons are asked for. Nothing of it is published in the parent view.
+  - **Not done:** the block's money figures are not on the ledger's change history; they never
+    were (a hand edit isn't either). The server's `shift_report_amendments` and `audit` rows are
+    the record.
 - **Two or more families on a shift: a second parent confirms** (S-4, Keith 2026-10-01). Where
   the scouts on a block come from two or more families (`familyKeyOf`, so brothers and sisters
   are one family), the report also needs a parent of a scout on that block to confirm it. That

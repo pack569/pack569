@@ -71,6 +71,9 @@ export const sameFamilyRefused = () => json(409, { error: 'same-family', code: '
 // The pack record moved between the server's read of it and the write that named its rev (a
 // same-family decision rests on it): nothing written, and the page tries again rather than undo.
 export const packMoved = () => json(409, { error: 'pack-moved', code: 'failed-precondition' });
+// Keith (2026-10-07): an admin's correction would change cash from sales a leader has already
+// recorded as collected or converted; that record is undone first.
+export const salesCashRecorded = () => json(409, { error: 'sales-cash-recorded', code: 'failed-precondition' });
 export const tooManyReports = (why) => json(409, { error: 'too-many-open', code: 'failed-precondition', reason: why });
 export const unavailable = (why) => json(503, { error: 'unavailable', code: 'unavailable', reason: why || '' });
 

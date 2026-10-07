@@ -182,6 +182,9 @@ export const canSubmitShiftReport = (role) => ['admin', 'editor', 'viewer', 'par
 // Who may accept one or send it back: the people who may write the pack record, since
 // accepting is what puts the figures into it.
 export const canReviewShiftReport = (role) => canWritePack(role);
+// Who may correct an accepted report's figures in place, with a reason (Keith, 2026-10-07;
+// migrations/0005_shift_report_amendments.sql): an ADMIN only. An editor sends it back instead.
+export const canAmendShiftReport = (role) => role === 'admin';
 // Who sees every report in full (names, amounts, notes): the leaders, as with the ledger. A
 // parent sees their own in full, and of anyone else's only which blocks are spoken for.
 export const canReadAllShiftReports = (role) => isLeader(role);
