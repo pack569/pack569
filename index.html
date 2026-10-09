@@ -30940,8 +30940,9 @@
     });
     var pending = sync.members.filter(function (m) { return m.role === 'pending'; });
     if (pending.length) {
-      add('chair', 'now', pending.length + ' person' + (pending.length === 1 ? '' : 's') + ' waiting for access',
+      add('chair', 'now', pending.length + (pending.length === 1 ? ' person' : ' people') + ' waiting for access',
         pending.map(function (m) { return m.name || m.email; }).slice(0, 3).join(', '), 'pack', 'sharing');
+      out[out.length - 1].joinAsk = true;   // renderHome leaves it out for an admin, who has the card
     }
     var renewScouts = activeScouts().filter(function (s) { return renewalDue(s.renewalMonth); });
     if (renewScouts.length) {
@@ -31210,6 +31211,32 @@
     return h + '</div>';
   }
 
+  // The people who asked to join through the sign-up link, with the approve buttons the Members
+  // card has (same data-act, same admin-only setMemberRole). Admins only: nobody else can let
+  // them in. Parent first: the link is the one handed to families. '' when nobody is waiting.
+  function homeJoinRequestsCard() {
+    if (!backendConfigured() || !sync.user || sync.accountsUnavailable || !isAdmin()) return '';
+    var me = sync.user.uid;
+    var pending = sync.members.filter(function (m) { return m.role === 'pending' && m.uid !== me; });
+    if (!pending.length) return '';
+    var h = '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">Asking to join</h2>' +
+      '<span class="small muted">' + pending.length + (pending.length === 1 ? ' person' : ' people') + '</span></div>' +
+      '<p class="small muted" style="margin:6px 0 8px">They signed in with the pack’s sign-up link. Let each one in as a ' +
+      '<strong>parent</strong> (the family calendar), or as a leader who can view or edit the pack.</p><div class="acct-list">';
+    pending.forEach(function (m) {
+      h += '<div class="acct-row"><div class="acct-who">' +
+        '<span class="acct-name">' + esc(m.name || m.email || 'Someone') + '</span>' +
+        (m.email ? '<span class="acct-email small muted">' + esc(m.email) + '</span>' : '') +
+        '</div><div class="acct-ctl">' +
+        '<button type="button" class="btn small primary" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="parent">Approve as Parent</button>' +
+        '<button type="button" class="btn small" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="viewer">Viewer</button>' +
+        '<button type="button" class="btn small" data-act="member-approve" data-uid="' + esc(m.uid) + '" data-role="editor">Editor</button>' +
+        '</div></div>';
+    });
+    h += '</div><p class="small muted" style="margin:8px 0 0">Don’t know someone? Remove them from ' +
+      '<button type="button" class="btn small ghost" data-act="goto" data-tab="pack" data-section="sharing">Pack · Sharing</button></p>';
+    return h + '</div>';
+  }
   function renderHome() {
     var me = leaderForUser();
     var jobIds = myJobs();
@@ -31262,6 +31289,12 @@
         '</div>';
     }
 
+    // Keith (2026-10-08) — sign-up requests, at the top for an admin. They used to wait in the
+    // Members card under Pack · Sharing, and on Home only as a Committee Chair task: an admin with
+    // another job found it folded away under "Elsewhere in the pack", so nobody knew to look.
+    var joinAsks = homeJoinRequestsCard();
+    h += joinAsks;
+
     // Start here — relocated from the Calendar tab, where a first-run checklist never belonged.
     if (startHereVisible(state)) {
       h += '<div class="card"><div class="spread"><h2 class="section display" style="margin-bottom:0">Start here</h2>' +
@@ -31288,6 +31321,7 @@
     // A storefront whose totals wait on "Storefronts to close" is not also "no money entered yet":
     // accepting them is how the money gets entered. Without that card (a viewer), the row stays.
     if (toClose) tasks = tasks.filter(function (t) { return !(t.sfId && toClose.sfIds[t.sfId]); });
+    if (joinAsks) tasks = tasks.filter(function (t) { return !t.joinAsk; });
     var LIMIT = 5;
     var mine = [], rest = [];
     if (jobIds.length) {
