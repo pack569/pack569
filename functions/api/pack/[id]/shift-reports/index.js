@@ -8,7 +8,7 @@
 //        only (canConfirm where they may confirm), myShifts and linked — never a leader-only field.
 //        The parent preview asks for this, so a leader who is also a parent sees, and sends, as
 //        one (Keith, 2026-10-01). It only ever narrows what this role could read anyway.
-// POST /api/pack/:id/shift-reports   send one: { sfId, blockId, teCents, cashCents, salesCashCents?, note?, attest: true }
+// POST /api/pack/:id/shift-reports   send one: { sfId, blockId, teCents, cashCents, salesCashCents?, note?, inventory?, attest: true }
 //                                     (admin, editor, viewer, parent — never pending)
 //
 // Not a Part C rule: Firestore never had shift reports (migrations/0003_shift_reports.sql says
@@ -23,6 +23,10 @@
 //     signature box ticked (attest: true). S-5: the cash from popcorn sales still in hand
 //     (salesCashCents) is optional, 0 when left out, and never more than the Trail's End amount
 //     it is part of (migrations/0004_shift_report_sales_cash.sql).
+//   - The count of popcorn left on the table (Keith, 2026-10-08; migrations/0006): optional,
+//     [{ productId, left }], each product one the stored view publishes for that storefront event
+//     (rules.js shiftInventoryProblem). Information for the leaders; it never changes the pack's
+//     inventory. Read like the figures: leaders, and the family's own report, never anyone else.
 //   - One at a time: a block with a report waiting, or accepted, takes no second one (409
 //     shift-reported). The insert re-checks that in the same statement, and the table's
 //     partial unique index is the backstop, so two families sending at once cannot both land.
@@ -43,15 +47,27 @@ import { route, json, readObject, refuse, forbidden, badRequest, shiftReported, 
 import { withMember, auditIf } from '../../../../_lib/pack.js';
 import { canSubmitShiftReport, canReadAllShiftReports, shiftReportProblem, cleanReportNote, packToday, shiftOfView, shiftNeedsConfirm, reportSalesCash,
   shiftConfirmers, shiftParentUids, familiesOf, canConfirmShiftReport, daysBetween, SHIFT_REPORT_DAYS, SHIFT_REPORT_MAX_OPEN, SHIFT_REPORT_MAX_PER_DAY,
-  SHIFT_REPORT_LEADER_DAYS } from '../../../../_lib/rules.js';
+  SHIFT_REPORT_LEADER_DAYS, shiftInventoryProblem, viewProductIds, inventoryJson, inventoryList } from '../../../../_lib/rules.js';
 
 export const REPORT_COLS = 'id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, submitted_by_name, submitted_at, ' +
   'updated_at, status, reviewed_by_uid, reviewed_by_name, reviewed_at, review_note, stamp, needs_confirm, confirmed_by_uid, confirmed_by_name, ' +
   'confirmed_at, overridden, accepted_by_uid, accepted_by_name, accepted_at, accept_note, verified_by_leader, sales_cash_cents, ' +
-  'sales_cash_outcome, sales_cash_by_uid, sales_cash_by_name, sales_cash_at';
+  'sales_cash_outcome, sales_cash_by_uid, sales_cash_by_name, sales_cash_at, inventory_json';
 // The statuses that hold a block: one waiting for a leader, or one a leader accepted.
 export const HOLDS_BLOCK = "status IN ('submitted', 'accepted')";
-const POST_KEYS = ['sfId', 'blockId', 'teCents', 'cashCents', 'salesCashCents', 'note', 'attest'];
+const POST_KEYS = ['sfId', 'blockId', 'teCents', 'cashCents', 'salesCashCents', 'note', 'inventory', 'attest'];
+// A body's limit: room for a count of SHIFT_INVENTORY_MAX products (twice, in an admin's edit).
+export const SHIFT_REPORT_BODY_MAX = 8192;
+// The audit table's own limit on a detail (migrations/0001: length(detail) <= 2000).
+const AUDIT_DETAIL_MAX = 2000;
+// A count in an audit detail, as [productId, left] pairs. A detail must fit the audit table: a
+// count too long for it (dozens of products with long ids) is recorded as how many products were
+// counted (inventoryCounted), and the report itself still holds it in full.
+export function auditInventory(detail, invJson) {
+  const pairs = inventoryList(invJson).map((x) => [x.productId, x.left]);
+  const d = Object.assign({}, detail, { inventory: pairs });
+  return JSON.stringify(d).length <= AUDIT_DETAIL_MAX ? d : Object.assign({}, detail, { inventoryCounted: pairs.length });
+}
 
 // A report as the page sees it. `uid` is the caller: `mine` says whether they sent it. A leader
 // (`full`) also gets both account ids and the reviewer's whole name. A parent only ever reads
@@ -67,11 +83,15 @@ export const firstName = (n) => {
 // migrations/0005_shift_report_amendments.sql), oldest first: what it held before, what it holds
 // after, why, who and when. A family reads its own report's, since the reason is written for them
 // to read, with the admin's FIRST name only and never an account id; a leader reads them in full.
-const AMEND_COLS = 'report_id, at, by_uid, by_name, reason, was_te_cents, was_cash_cents, was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents';
-function amendOut(a, full) {
+// 2026-10-08 (migrations/0006): and the count of popcorn left, before and after, when it changed.
+const AMEND_COLS = 'report_id, at, by_uid, by_name, reason, was_te_cents, was_cash_cents, was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents, ' +
+  'was_inventory_json, inventory_json';
+// `count`: whether the caller may read the count of popcorn left (a leader, or the family's own report).
+function amendOut(a, full, count) {
   const o = { at: a.at, byName: full ? (a.by_name || null) : firstName(a.by_name), reason: a.reason,
     was: { teCents: a.was_te_cents, cashCents: a.was_cash_cents, salesCashCents: a.was_sales_cash_cents },
     now: { teCents: a.te_cents, cashCents: a.cash_cents, salesCashCents: a.sales_cash_cents } };
+  if (count && a.was_inventory_json !== a.inventory_json) { o.was.inventory = inventoryList(a.was_inventory_json); o.now.inventory = inventoryList(a.inventory_json); }
   if (full) o.byUid = a.by_uid;
   return o;
 }
@@ -85,9 +105,15 @@ export async function readAmendments(db, packId, inSql, args) {
   return by;
 }
 export const readReportAmendments = (db, packId, id) => readAmendments(db, packId, '?', [id]).then((by) => by[id] || []);
+// Review round 1 (security S1, 2026-10-08): a report can also reach a caller who is neither a
+// leader nor its sender: the second parent's 'confirm' is answered with the report. They get the
+// sender's FIRST name only (as the confirm list gives it), and never the count of popcorn left,
+// which is the leaders' and the sending family's alone.
 export function reportOut(row, uid, full, amends) {
+  const own = row.submitted_by_uid === uid, count = full || own;
   const r = { id: row.id, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents,
-    salesCashCents: row.sales_cash_cents || 0, note: row.note, status: row.status, mine: row.submitted_by_uid === uid, submittedByName: row.submitted_by_name,
+    salesCashCents: row.sales_cash_cents || 0, note: row.note, status: row.status, mine: own,
+    submittedByName: full || own ? row.submitted_by_name : firstName(row.submitted_by_name),
     submittedAt: row.submitted_at, updatedAt: row.updated_at,
     reviewedByName: full ? (row.reviewed_by_name || null) : firstName(row.reviewed_by_name),
     // A leader's note reaches a family only as the reason it was sent back (security review 3): an
@@ -97,7 +123,9 @@ export function reportOut(row, uid, full, amends) {
     needsConfirm: row.needs_confirm === 1, confirmed: !!row.confirmed_by_uid,
     confirmedByName: full ? (row.confirmed_by_name || null) : firstName(row.confirmed_by_name),
     confirmedAt: row.confirmed_at || null, overridden: row.overridden === 1,
-    amendments: (amends || []).map((a) => amendOut(a, full)) };
+    // 2026-10-08: the count of popcorn left on the table ([] when nothing was counted).
+    amendments: (amends || []).map((a) => amendOut(a, full, count)) };
+  if (count) r.inventory = inventoryList(row.inventory_json);
   if (full) {
     r.submittedByUid = row.submitted_by_uid; r.reviewedByUid = row.reviewed_by_uid || null; r.confirmedByUid = row.confirmed_by_uid || null;
     // The accept, as it was made (written once): who, when, why if overridden, and whether the
@@ -272,13 +300,17 @@ async function list({ request, db, packId, role, user }) {
 
 async function submit({ request, db, packId, role, user, member }) {
   if (!canSubmitShiftReport(role)) return forbidden();
-  const b = await readObject(request, 4096);
+  const b = await readObject(request, SHIFT_REPORT_BODY_MAX);
   for (const k of Object.keys(b)) if (POST_KEYS.indexOf(k) === -1) refuse(badRequest('unknown-field'));
   const vrow = await db.prepare('SELECT payload FROM parent_views WHERE pack_id = ?').bind(packId).first();
   let view = null;
   try { view = vrow ? JSON.parse(vrow.payload) : null; } catch (e) { view = null; }
   const why = shiftReportProblem(b, view, packToday());
   if (why) refuse(badRequest(why));
+  // The count, if any: only products the view publishes for this storefront.
+  const invWhy = shiftInventoryProblem(b.inventory, viewProductIds(shiftOfView(view, b.sfId, b.blockId).ev));
+  if (invWhy) refuse(badRequest(invWhy));
+  const invJson = inventoryJson(b.inventory);
   // S-4: from the stored view, never the body, so a family cannot opt out of a second signature.
   const needsConfirm = shiftNeedsConfirm(shiftOfView(view, b.sfId, b.blockId).shift) ? 1 : 0;
   const held = await holder(db, packId, b.blockId);
@@ -301,16 +333,16 @@ async function submit({ request, db, packId, role, user, member }) {
   try {
     res = await db.batch([
       db.prepare('INSERT INTO shift_reports (id, pack_id, sf_id, block_id, te_cents, cash_cents, note, submitted_by_uid, ' +
-        "submitted_by_name, submitted_at, updated_at, status, review_note, stamp, needs_confirm, sales_cash_cents) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', '', ?, ?, ? " +
+        "submitted_by_name, submitted_at, updated_at, status, review_note, stamp, needs_confirm, sales_cash_cents, inventory_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', '', ?, ?, ?, ? " +
         'WHERE NOT EXISTS (SELECT 1 FROM shift_reports WHERE pack_id = ? AND block_id = ? AND ' + HOLDS_BLOCK + ') AND ' +
         "(SELECT count(*) FROM shift_reports WHERE pack_id = ? AND submitted_by_uid = ? AND status = 'submitted') < ? AND " +
         '(SELECT count(*) FROM shift_reports WHERE pack_id = ? AND submitted_by_uid = ? AND submitted_at > ?) < ? AND ' +
         STILL_MEMBER(SUBMIT_ROLES))
-        .bind(id, packId, b.sfId, b.blockId, b.teCents, b.cashCents, note, user.uid, member.name || '', now, now, stamp, needsConfirm, salesCash,
+        .bind(id, packId, b.sfId, b.blockId, b.teCents, b.cashCents, note, user.uid, member.name || '', now, now, stamp, needsConfirm, salesCash, invJson,
           packId, b.blockId, packId, user.uid, SHIFT_REPORT_MAX_OPEN, packId, user.uid, now - 86400000, SHIFT_REPORT_MAX_PER_DAY,
           packId, user.uid, ...SUBMIT_ROLES),
-      auditIf(db, packId, user.uid, 'shift.report', { report: id, sfId: b.sfId, blockId: b.blockId, teCents: b.teCents,
-        cashCents: b.cashCents, salesCashCents: salesCash, needsConfirm: needsConfirm === 1 }, now, 'EXISTS (SELECT 1 FROM shift_reports WHERE id = ? AND stamp = ?)', [id, stamp])
+      auditIf(db, packId, user.uid, 'shift.report', auditInventory({ report: id, sfId: b.sfId, blockId: b.blockId, teCents: b.teCents,
+        cashCents: b.cashCents, salesCashCents: salesCash, needsConfirm: needsConfirm === 1 }, invJson), now, 'EXISTS (SELECT 1 FROM shift_reports WHERE id = ? AND stamp = ?)', [id, stamp])
     ]);
   } catch (e) {
     // The partial unique index: another report took the block between the check and the write.

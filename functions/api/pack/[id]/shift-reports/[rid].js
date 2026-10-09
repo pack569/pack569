@@ -1,5 +1,11 @@
+// GET   /api/pack/:id/shift-reports/:rid   one report, and everything that happened to it (Keith,
+//        2026-10-08): ADMINS ONLY (rules.js canReadShiftReportHistory; an editor, a viewer or a
+//        parent gets the one fixed 403, whether or not the report exists). Answers
+//        { report, history, truncated }: the report as a leader reads it (reportOut, in full), and
+//        its audit rows oldest first, at most SR_HISTORY_MAX (the newest; truncated says some
+//        older ones were left out). See historyOut below for what each step carries.
 // PATCH /api/pack/:id/shift-reports/:rid   change one shift report, by `action`:
-//   { action: 'edit', teCents, cashCents, salesCashCents?, note?, attest: true }   the sender, while it is waiting
+//   { action: 'edit', teCents, cashCents, salesCashCents?, note?, inventory?, attest: true }   the sender, while it is waiting
 //   { action: 'withdraw' }                                        the sender, while it is waiting
 //   { action: 'confirm', teCents, cashCents, salesCashCents?, updatedAt, attest: true }  S-4: a parent from another family on the shift
 //   { action: 'accept', teCents, cashCents, salesCashCents?, collected?, reviewNote?, override? }  admin or editor; not their own, nor one they confirmed
@@ -14,8 +20,15 @@
 // report on the shift) only on the sent-back kind.
 //   { action: 'return', reviewNote }                              admin or editor; waiting or accepted
 //   { action: 'salescash', outcome, salesCashCents }              admin or editor; an accepted report holding cash from sales
-//   { action: 'amend', teCents, cashCents, salesCashCents?, wasTeCents, wasCashCents, wasSalesCashCents?, reason }
+//   { action: 'amend', teCents, cashCents, salesCashCents?, wasTeCents, wasCashCents, wasSalesCashCents?, inventory?, wasInventory?, reason }
 //                                                                 an ADMIN; an accepted report (Keith, 2026-10-07)
+// The count of popcorn left on the table (Keith, 2026-10-08; migrations/0006): the sender's edit
+// may change it (left out, it stays as it is; [] clears it); an admin's 'amend' may correct it,
+// naming the count it was shown (wasInventory, both or neither), kept before and after in
+// shift_report_amendments. A confirm and an accept leave it alone and never name it: it is
+// information for the leaders, not part of the signed figures, and changes nothing in the pack.
+// Products: those the stored view publishes for the report's storefront (an admin's correction
+// may also keep a product the report already counts, for a storefront no longer published).
 // Answers { report } as GET would show it to the caller.
 //
 // Not a Part C rule (see index.js beside this file, and SETUP.md Part C, "Shift reports").
@@ -77,9 +90,11 @@
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, reportMoved, samePerson, notShiftParent, needsConfirm,
   notCollected, sameFamilyRefused, packMoved, salesCashRecorded } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
-import { canSubmitShiftReport, canReviewShiftReport, canAmendShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
-  SHIFT_REPORT_NOTE_MAX, shiftConfirmers, sameFamily, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS } from '../../../../_lib/rules.js';
-import { reportOut, readReport, readReportAmendments, readPackRecord, readPackForFamily, STILL_MEMBER, SUBMIT_ROLES } from './index.js';
+import { canSubmitShiftReport, canReviewShiftReport, canAmendShiftReport, canReadAllShiftReports, canReadShiftReportHistory, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
+  SHIFT_REPORT_NOTE_MAX, shiftConfirmers, sameFamily, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS,
+  shiftInventoryProblem, SHAPE_ONLY, viewProductIds, inventoryJson, inventoryList } from '../../../../_lib/rules.js';
+import { reportOut, readReport, readReportAmendments, readPackRecord, readPackForFamily, STILL_MEMBER, SUBMIT_ROLES, SHIFT_REPORT_BODY_MAX,
+  auditInventory } from './index.js';
 
 // Is this leader in the sender's family, by the record read for it? An unreadable record says yes.
 const familyOf = (famRec, uid, senderUid) => !!famRec && (famRec.unreadable === true || sameFamily(famRec.pack, uid, senderUid));
@@ -87,13 +102,13 @@ const familyOf = (famRec, uid, senderUid) => !!famRec && (famRec.unreadable === 
 const REVIEW_ROLES = ['admin', 'editor'];
 // What each action may carry, besides `action`.
 const ACTION_KEYS = {
-  edit: ['teCents', 'cashCents', 'salesCashCents', 'note', 'attest'],
+  edit: ['teCents', 'cashCents', 'salesCashCents', 'note', 'inventory', 'attest'],
   withdraw: [],
   confirm: ['attest', 'teCents', 'cashCents', 'salesCashCents', 'updatedAt'],
   accept: ['teCents', 'cashCents', 'salesCashCents', 'reviewNote', 'override', 'collected'],
   return: ['reviewNote'],
   salescash: ['outcome', 'salesCashCents'],
-  amend: ['teCents', 'cashCents', 'salesCashCents', 'wasTeCents', 'wasCashCents', 'wasSalesCashCents', 'reason']
+  amend: ['teCents', 'cashCents', 'salesCashCents', 'wasTeCents', 'wasCashCents', 'wasSalesCashCents', 'inventory', 'wasInventory', 'reason']
 };
 const AMEND_ROLES = ['admin'];
 const RID_RE = /^[A-Za-z0-9-]{1,64}$/;
@@ -102,6 +117,17 @@ function reportId(params) {
   const r = params && params.rid;
   if (typeof r !== 'string' || !RID_RE.test(r)) refuse(notFound());
   return r;
+}
+// The products this report's storefront publishes for the count, from the stored view (none if
+// it is not published), plus `keep`: the ids the report already counts, for an admin's correction.
+async function allowedProducts(db, packId, row, keep) {
+  const vrow = await db.prepare('SELECT payload FROM parent_views WHERE pack_id = ?').bind(packId).first();
+  let view = null;
+  try { view = vrow ? JSON.parse(vrow.payload) : null; } catch (e) { view = null; }
+  const at = shiftOfView(view, row.sf_id, row.block_id);
+  const ok = viewProductIds(at && at.ev);
+  if (keep) inventoryList(row.inventory_json).forEach((x) => { ok[x.productId] = true; });
+  return ok;
 }
 function reviewNote(v, required, why) {
   if (v !== undefined && v !== null && typeof v !== 'string') refuse(badRequest(why || 'review-note'));
@@ -114,7 +140,7 @@ async function patch({ request, db, packId, role, user, member, params }) {
   const rid = reportId(params);
   // Pending, and anyone with no member row, are refused before anything is read.
   if (!canSubmitShiftReport(role)) return forbidden();
-  const b = await readObject(request, 4096);
+  const b = await readObject(request, SHIFT_REPORT_BODY_MAX);
   const action = b.action;
   if (typeof action !== 'string' || !Object.prototype.hasOwnProperty.call(ACTION_KEYS, action)) refuse(badRequest('action'));
   for (const k of Object.keys(b)) if (k !== 'action' && ACTION_KEYS[action].indexOf(k) === -1) refuse(badRequest('unknown-field'));
@@ -138,14 +164,23 @@ async function patch({ request, db, packId, role, user, member, params }) {
     if (action === 'edit') {
       const why = shiftReportFiguresProblem(b);
       if (why) refuse(badRequest(why));
+      // The count: left out, it stays; given, it replaces the one there ([] clears it). A product the
+      // report already counts stays allowed, as in an admin's correction, so a list that narrowed
+      // since it was sent (a leader recorded hand-outs) never drops or refuses the family's count.
+      let invJson = row.inventory_json || '';
+      if (b.inventory !== undefined && b.inventory !== null) {
+        const invWhy = shiftInventoryProblem(b.inventory, Array.isArray(b.inventory) && b.inventory.length ? await allowedProducts(db, packId, row, true) : {});
+        if (invWhy) refuse(badRequest(invWhy));
+        invJson = inventoryJson(b.inventory);
+      }
       // S-4: changed figures are not what the second parent checked, so their confirmation goes.
       const salesCash = reportSalesCash(b);
-      update = db.prepare('UPDATE shift_reports SET te_cents = ?, cash_cents = ?, sales_cash_cents = ?, note = ?, updated_at = ?, stamp = ?, ' +
+      update = db.prepare('UPDATE shift_reports SET te_cents = ?, cash_cents = ?, sales_cash_cents = ?, note = ?, inventory_json = ?, updated_at = ?, stamp = ?, ' +
         'confirmed_by_uid = NULL, confirmed_by_name = NULL, confirmed_at = NULL ' +
         "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND submitted_by_uid = ? AND " + STILL_MEMBER(roles))
-        .bind(b.teCents, b.cashCents, salesCash, cleanReportNote(b.note), now, stamp, packId, rid, row.stamp, user.uid, packId, user.uid, ...roles);
+        .bind(b.teCents, b.cashCents, salesCash, cleanReportNote(b.note), invJson, now, stamp, packId, rid, row.stamp, user.uid, packId, user.uid, ...roles);
       audit = 'shift.report.edit';
-      detail = { report: rid, teCents: b.teCents, cashCents: b.cashCents, salesCashCents: salesCash, confirmationCleared: !!row.confirmed_by_uid };
+      detail = auditInventory({ report: rid, teCents: b.teCents, cashCents: b.cashCents, salesCashCents: salesCash, confirmationCleared: !!row.confirmed_by_uid }, invJson);
     } else {
       update = db.prepare("UPDATE shift_reports SET status = 'withdrawn', updated_at = ?, stamp = ? " +
         "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'submitted' AND submitted_by_uid = ? AND " + STILL_MEMBER(roles))
@@ -274,8 +309,20 @@ async function patch({ request, db, packId, role, user, member, params }) {
     const wasSales = b.wasSalesCashCents !== undefined ? b.wasSalesCashCents : 0;
     for (const v of [b.wasTeCents, b.wasCashCents, wasSales]) if (!Number.isInteger(v)) refuse(badRequest('figures'));
     const note = reviewNote(b.reason, true, 'amend-reason');
+    // The count (2026-10-08): both or neither of inventory and wasInventory; left out, it stays.
+    const wasInv = row.inventory_json || '';
+    let invJson = wasInv;
+    if ((b.inventory === undefined) !== (b.wasInventory === undefined)) refuse(badRequest('inventory'));
+    if (b.inventory !== undefined) {
+      // What the admin was shown: a count of the right shape, whatever products it names.
+      if (shiftInventoryProblem(b.wasInventory, SHAPE_ONLY)) refuse(badRequest('inventory'));
+      const invWhy = shiftInventoryProblem(b.inventory, await allowedProducts(db, packId, row, true));
+      if (invWhy) refuse(badRequest(invWhy));
+      if (inventoryJson(b.wasInventory) !== wasInv) return reportMoved(row.status);
+      invJson = inventoryJson(b.inventory);
+    }
     if (b.wasTeCents !== row.te_cents || b.wasCashCents !== row.cash_cents || wasSales !== row.sales_cash_cents) return reportMoved(row.status);
-    if (b.teCents === row.te_cents && b.cashCents === row.cash_cents && salesCash === row.sales_cash_cents) refuse(badRequest('no-change'));
+    if (b.teCents === row.te_cents && b.cashCents === row.cash_cents && salesCash === row.sales_cash_cents && invJson === wasInv) refuse(badRequest('no-change'));
     if (row.sales_cash_outcome && salesCash !== row.sales_cash_cents) return salesCashRecorded();
     // A second adult's word on the money, as the accept is: never the sender, the confirmer, or
     // the sender's family.
@@ -283,21 +330,22 @@ async function patch({ request, db, packId, role, user, member, params }) {
     famRec = await readPackForFamily(db, packId);
     if (familyOf(famRec, user.uid, row.submitted_by_uid)) return sameFamilyRefused();
     roles = AMEND_ROLES;
-    update = db.prepare('UPDATE shift_reports SET te_cents = ?, cash_cents = ?, sales_cash_cents = ?, updated_at = ?, stamp = ? ' +
-      "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'accepted' AND te_cents = ? AND cash_cents = ? AND sales_cash_cents = ? " +
+    update = db.prepare('UPDATE shift_reports SET te_cents = ?, cash_cents = ?, sales_cash_cents = ?, inventory_json = ?, updated_at = ?, stamp = ? ' +
+      "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'accepted' AND te_cents = ? AND cash_cents = ? AND sales_cash_cents = ? AND inventory_json = ? " +
       'AND (sales_cash_outcome IS NULL OR sales_cash_cents = ?) AND submitted_by_uid != ? AND (confirmed_by_uid IS NULL OR confirmed_by_uid != ?) AND ' +
       (famRec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + STILL_MEMBER(roles))
-      .bind(b.teCents, b.cashCents, salesCash, now, stamp, packId, rid, row.stamp, row.te_cents, row.cash_cents, row.sales_cash_cents,
+      .bind(b.teCents, b.cashCents, salesCash, invJson, now, stamp, packId, rid, row.stamp, row.te_cents, row.cash_cents, row.sales_cash_cents, wasInv,
         salesCash, user.uid, user.uid, ...(famRec ? [packId, famRec.rev] : []), packId, user.uid, ...roles);
     amendRow = db.prepare('INSERT INTO shift_report_amendments (pack_id, report_id, at, by_uid, by_name, reason, was_te_cents, was_cash_cents, ' +
-      'was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ' +
+      'was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents, was_inventory_json, inventory_json) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ' +
       'WHERE EXISTS (SELECT 1 FROM shift_reports WHERE pack_id = ? AND id = ? AND stamp = ?)')
       .bind(packId, rid, now, user.uid, name, note, row.te_cents, row.cash_cents, row.sales_cash_cents, b.teCents, b.cashCents, salesCash,
-        packId, rid, stamp);
+        wasInv, invJson, packId, rid, stamp);
     audit = 'shift.amend';
-    detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, byName: name, reason: note,
+    // The count after, as every count-changing step records it (the history works out the before).
+    detail = auditInventory({ report: rid, sfId: row.sf_id, blockId: row.block_id, byName: name, reason: note,
       was: { teCents: row.te_cents, cashCents: row.cash_cents, salesCashCents: row.sales_cash_cents },
-      now: { teCents: b.teCents, cashCents: b.cashCents, salesCashCents: salesCash } };
+      now: { teCents: b.teCents, cashCents: b.cashCents, salesCashCents: salesCash } }, invJson);
   } else {
     if (row.status !== 'submitted' && row.status !== 'accepted') return reportMoved(row.status);
     roles = REVIEW_ROLES;
@@ -330,4 +378,136 @@ async function patch({ request, db, packId, role, user, member, params }) {
     await readReportAmendments(db, packId, rid)) });
 }
 
-export const onRequest = route({ PATCH: withMember(patch) });
+// ---- One report's history (Keith, 2026-10-08) ----
+// "A way for admins to see who makes the edits for shift reports." Every change to a report already
+// writes an audit row in the same batch as the change (above, and index.js's POST), naming the
+// report in its detail. This reads them back for one report, for an admin only.
+//   - Rows of this pack, a shift-report action, whose detail names this report. A detail that is
+//     not JSON is skipped (json_valid inside the CASE, so json_extract never sees it).
+//   - The audit holds account ids, not names. Each step's name is the account's member name now,
+//     else the name the detail kept when it was written, else (for the sender's own steps) the
+//     name the report was sent under, else 'a former member'. Full names, as reportOut gives
+//     leaders, and never an email address (leaderName). No account id is sent: nothing on the
+//     page needs one, and the detail's own (submittedBy, confirmedBy) stay here.
+//   - Each step carries only what is listed in historyOut, never the detail as it is.
+//   - A sender's edit carries the figures before it (`was`), from the step before it in the
+//     timeline, so the page can say "was → now"; an admin's edit kept its own `was`.
+//   - The count of popcorn left (2026-10-08): a send carries it when there is one; an edit or an
+//     admin's correction that changed it carries `wasInventory` (from the steps before; null when
+//     not known) and `inventory`. A count too long for its audit row says only inventoryUnknown.
+export const SR_HISTORY_MAX = 200;
+export const SR_HISTORY_ACTIONS = ['shift.report', 'shift.report.edit', 'shift.report.withdraw', 'shift.confirm', 'shift.accept',
+  'shift.accept.override', 'shift.return', 'shift.salescash.collected', 'shift.salescash.converted', 'shift.salescash.replaced',
+  'shift.salescash.undo', 'shift.amend'];
+const SR_SENDER_ACTIONS = ['shift.report', 'shift.report.edit', 'shift.report.withdraw'];
+// The name the detail kept, by action: who did it, as their member name was at the time.
+const SR_DETAIL_NAME = { 'shift.confirm': 'confirmerName', 'shift.accept': 'reviewerName', 'shift.accept.override': 'reviewerName',
+  'shift.return': 'reviewerName', 'shift.amend': 'byName' };
+// A name as a leader reads it: the whole name, trimmed, and never an email address.
+export const leaderName = (n) => {
+  const s = String(n == null ? '' : n).trim();
+  return s && s.indexOf('@') === -1 ? s.slice(0, 120) : null;
+};
+const figuresOf = (d) => (d && Number.isInteger(d.teCents) && Number.isInteger(d.cashCents)
+  ? { teCents: d.teCents, cashCents: d.cashCents, salesCashCents: Number.isInteger(d.salesCashCents) ? d.salesCashCents : 0 } : null);
+const textOf = (v) => (typeof v === 'string' ? v.slice(0, 300) : '');
+// A detail's count: a list, or null when the row says it was too long to keep, or undefined when
+// the row has none (written before counts existed: nothing was counted).
+const countOf = (d) => {
+  if (Number.isInteger(d.inventoryCounted)) return null;
+  if (!Array.isArray(d.inventory)) return undefined;
+  return d.inventory.filter((p) => Array.isArray(p) && typeof p[0] === 'string' && Number.isInteger(p[1]))
+    .map((p) => ({ productId: p[0].slice(0, 64), left: p[1] }));
+};
+const sameCount = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// The steps, oldest first. `rows` are audit rows (id, at, uid, action, detail), oldest first;
+// `names` is { uid: member name } for the accounts still in the pack; `report` is the row.
+export function historyOut(rows, names, report) {
+  let fig = null;
+  let inv = [];   // the count so far: [] until a step says otherwise, null when not known
+  const out = [];
+  for (const row of rows) {
+    if (SR_HISTORY_ACTIONS.indexOf(row.action) === -1) continue;
+    let d = {};
+    try { d = JSON.parse(row.detail); } catch (e) { d = {}; }
+    if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
+    const a = row.action;
+    const member = Object.prototype.hasOwnProperty.call(names, row.uid);
+    const sender = SR_SENDER_ACTIONS.indexOf(a) !== -1 && row.uid === report.submitted_by_uid;
+    const byName = (member && leaderName(names[row.uid])) ||
+      leaderName(a.indexOf('shift.salescash.') === 0 ? d.byName : d[SR_DETAIL_NAME[a]]) ||
+      (sender && leaderName(report.submitted_by_name)) || (member ? 'a pack member' : 'a former member');
+    const e = { at: row.at, action: a, byName };
+    const count = countOf(d);
+    const counted = () => {
+      if (count === undefined) return;
+      if (count === null) { e.inventoryUnknown = true; inv = null; return; }
+      if (inv !== null && sameCount(inv, count)) return;
+      if (a !== 'shift.report') e.wasInventory = inv;
+      e.inventory = count;
+      inv = count;
+    };
+    if (a === 'shift.report') {
+      e.figures = figuresOf(d);
+      e.needsConfirm = d.needsConfirm === true;
+      fig = e.figures;
+      counted();
+    } else if (a === 'shift.report.edit') {
+      e.was = fig;
+      e.figures = figuresOf(d);
+      e.confirmationCleared = d.confirmationCleared === true;
+      fig = e.figures;
+      counted();
+    } else if (a === 'shift.confirm') {
+      e.figures = figuresOf(d);
+      fig = e.figures || fig;
+    } else if (a === 'shift.accept' || a === 'shift.accept.override') {
+      e.figures = figuresOf(d);
+      e.collected = d.collected === true;
+      e.sameFamily = d.sameFamily === true;
+      e.reason = textOf(a === 'shift.accept.override' ? d.reason : d.reviewNote);
+      fig = e.figures || fig;
+    } else if (a === 'shift.return') {
+      e.reason = textOf(d.reason);
+      e.from = d.from === 'accepted' ? 'accepted' : 'submitted';
+    } else if (a === 'shift.amend') {
+      e.was = figuresOf(d.was);
+      e.figures = figuresOf(d.now);
+      e.reason = textOf(d.reason);
+      fig = e.figures || fig;
+      counted();
+    } else if (a.indexOf('shift.salescash.') === 0) {
+      e.outcome = a.slice('shift.salescash.'.length);
+      e.salesCashCents = Number.isInteger(d.salesCashCents) ? d.salesCashCents : 0;
+      if (e.outcome === 'undo' && d.was && typeof d.was === 'object') {
+        const w = d.was.outcome;
+        e.undid = w === 'collected' || w === 'converted' || w === 'replaced' ? w : null;
+      }
+    }
+    out.push(e);
+  }
+  return out;
+}
+// The audit rows that name report `rid`, as SQL bound with (packId, rid).
+const HISTORY_WHERE = "pack_id = ? AND action LIKE 'shift.%' AND (CASE WHEN json_valid(detail) THEN json_extract(detail, '$.report') END) = ?";
+
+async function read({ db, packId, role, user, params }) {
+  // Anyone but an admin gets the one fixed 403 before anything is read, whatever the id.
+  if (!canReadShiftReportHistory(role)) return forbidden();
+  const rid = reportId(params);
+  const row = await readReport(db, packId, rid);
+  if (!row) return notFound();
+  const r = await db.prepare('SELECT id, at, uid, action, detail FROM audit WHERE ' + HISTORY_WHERE + ' ORDER BY id DESC LIMIT ?')
+    .bind(packId, rid, SR_HISTORY_MAX + 1).all();
+  const rows = (r.results || []).slice(0, SR_HISTORY_MAX).reverse();
+  // The names of the accounts in those rows that are still members. A subquery, not a list of ids:
+  // D1 binds at most 100 values.
+  const m = await db.prepare('SELECT uid, name FROM members WHERE pack_id = ? AND uid IN (SELECT uid FROM audit WHERE ' + HISTORY_WHERE + ')')
+    .bind(packId, packId, rid).all();
+  const names = {};
+  for (const x of m.results || []) names[x.uid] = x.name;
+  return json(200, { report: reportOut(row, user.uid, true, await readReportAmendments(db, packId, rid)),
+    history: historyOut(rows, names, row), truncated: (r.results || []).length > SR_HISTORY_MAX });
+}
+
+export const onRequest = route({ GET: withMember(read), PATCH: withMember(patch) });
