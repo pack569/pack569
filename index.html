@@ -929,6 +929,16 @@
   #srCard button.btn, .sr-banner-row button.btn, .sr-home-close button.btn, input.signoff-in { min-height: 44px; }
   .sr-home-needs { margin-top: 2px; }
   .sr-hist { font-size: 0.8rem; }
+  /* Keith (2026-10-08) — one report's details: facts as label / value (stacked on a phone), and
+     its timeline as a list, never a wide table, so nothing scrolls sideways. */
+  .sr-details { overflow-wrap: anywhere; }
+  .sr-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: 0.86rem; }
+  .sr-facts dt { font-weight: 650; color: var(--ink-soft); }
+  .sr-facts dd { margin: 0; }
+  @media (max-width: 520px) { .sr-facts { grid-template-columns: 1fr; gap: 0; } .sr-facts dd { margin: 0 0 6px; } }
+  .sr-timeline { list-style: none; margin: 0; padding: 0; }
+  .sr-timeline li { padding: 6px 0 8px 12px; border-left: 2px solid var(--line); break-inside: avoid; }
+  .sr-timeline li + li { margin-top: 2px; }
   .sr-badge { background: var(--accent); color: #fff; font-size: 0.7rem; vertical-align: middle; }
   /* A phone cannot hold a 17-character time range and two full names on one line, and the
      wrapped two-column form reads as a mistake — a phantom column with nothing beside it. So
@@ -15649,6 +15659,11 @@
     // PATCH { action: 'edit' | 'withdraw' | 'accept' | 'return', … }: { report }.
     patchShiftReport: function (docId, rid, body) {
       return this.call('PATCH', this.packPath(docId, '/shift-reports/' + encodeURIComponent(rid)), body);
+    },
+    // GET one report and its history (Keith, 2026-10-08): { report, history, truncated }. Admins
+    // only; anyone else gets the fixed 403. Read when an admin opens a report's Details.
+    shiftReportDetails: function (docId, rid) {
+      return this.call('GET', this.packPath(docId, '/shift-reports/' + encodeURIComponent(rid)));
     }
   };
   // Is there a cloud to talk to at all? False in device-only mode and in every preview build
@@ -25513,7 +25528,11 @@
     if (canReviewReports() && r && r.status === 'accepted' && ui.srReturn !== r.id && !amendOpen) {
       h += '<div class="sr-acts">' + (srCanAmend(r) && !srAmendNotMine(r) ? '<button type="button" class="btn small ghost" data-act="sr-amend-open" data-rid="' + esc(r.id) + '"' +
           ' aria-label="Edit the accepted totals">Edit</button>' : '') +
-        '<button type="button" class="btn small ghost" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button></div>';
+        '<button type="button" class="btn small ghost" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button>' +
+        srDetailsButton(r.id, '') + '</div>';
+    } else if (r && srCanSeeDetails() && ui.srReturn !== r.id && !amendOpen) {
+      // An admin whose page can't change the pack just now still reads the details.
+      h += '<div class="sr-acts">' + srDetailsButton(r.id, '') + '</div>';
     }
     h += '</div>';
     // An admin who may not correct this one is told why, beside the button they would look for.
@@ -26115,7 +26134,7 @@
       // Keith (2026-10-07): an admin's corrections after the accept. The figures above are the
       // corrected ones, and "differs" compares the block with them; this says what they were.
       var amends = srAmends(r);
-      rows.push({ date: date, storefront: blk ? String(blk.sf.name || 'Storefront') : '(no longer on the schedule)',
+      rows.push({ rid: r.id, date: date, storefront: blk ? String(blk.sf.name || 'Storefront') : '(no longer on the schedule)',
         shift: blk ? (fmtTimeRange(blk.b.start, blk.b.end) || String(blk.b.label || '')) : '', te: r.teCents || 0, cash: r.cashCents || 0,
         salesCash: r.salesCashCents || 0, salesCashBy: srCashHistorySay(r),
         sentBy: srNameClean(r.submittedByName), verifiedBy: verified, acceptedBy: ledgerStampClean(r.acceptedByName || ''),
@@ -26183,10 +26202,15 @@
       '<p class="muted small" style="margin:0 0 10px">Leaders only. Every family’s storefront shift report this program year, and what became of it.</p>';
     if (!rows.length) h += '<p class="small muted">No shift reports this program year.</p>';
     else {
-      h += '<div class="tbl-wrap"><table class="sr-hist"><thead><tr>' + SR_HISTORY_HEAD.map(function (c) { return '<th scope="col">' + esc(c) + '</th>'; }).join('') +
-        '</tr></thead><tbody>';
+      // Keith (2026-10-08): an admin opens any row's details and history (srCanSeeDetails).
+      var details = srCanSeeDetails();
+      // First, so a phone finds it without scrolling the wide table sideways.
+      h += '<div class="tbl-wrap"><table class="sr-hist"><thead><tr>' +
+        (details ? '<th scope="col" class="no-print"><span class="visually-hidden">Details</span></th>' : '') +
+        SR_HISTORY_HEAD.map(function (c) { return '<th scope="col">' + esc(c) + '</th>'; }).join('') + '</tr></thead><tbody>';
       rows.forEach(function (x) {
-        h += '<tr><td>' + esc(fmtDate(x.date)) + '</td><td>' + esc(x.storefront) + '</td><td>' + esc(x.shift) + '</td>' +
+        h += '<tr>' + (details ? '<td class="no-print">' + srDetailsButton(x.rid, 'history') + '</td>' : '') +
+          '<td>' + esc(fmtDate(x.date)) + '</td><td>' + esc(x.storefront) + '</td><td>' + esc(x.shift) + '</td>' +
           '<td class="num">' + esc(fmt(x.te)) + '</td><td class="num">' + esc(fmt(x.cash)) + '</td><td class="num">' + esc(fmt(x.salesCash || 0)) + '</td>' +
           '<td>' + esc(x.salesCashBy || '') + '</td><td>' + esc(x.sentBy) + '</td>' +
           '<td>' + esc(x.verifiedBy) + '</td><td>' + esc(x.acceptedBy) + '</td><td>' + esc(x.overrideReason) + '</td>' +
@@ -26194,6 +26218,200 @@
           '<td>' + esc(x.sentBackReason) + '</td><td>' + esc(x.differs) + '</td></tr>';
       });
       h += '</tbody></table></div>';
+    }
+    return h + '</div></div></div>';
+  }
+
+  /* ----- One shift report's details, and who changed it (Keith, 2026-10-08) -----
+     "Add a way for admin to view the details from past shift reports, and a way for admins to see
+     who makes the edits." ADMINS ONLY (the server's canReadShiftReportHistory: an editor or a
+     viewer reads the season's list and the block's line, as before, and has no Details button; a
+     direct call gets the fixed 403). A Details button on each row of Shift reports this season and
+     beside Edit / Send back under a block's accepted report opens this overlay: the report as it
+     stands (from the list at once, then the server's copy), and its timeline from the audit, read
+     when it opens (GET …/shift-reports/:rid). Names are adults' names as leaders read them, never
+     a child's; printable like the season's record. Read-only, so it opens while the reload gate
+     holds (HELD_ACTS). */
+  function srCanSeeDetails() { return leaderReportsOn() && sync.myRole === 'admin'; }
+  var SR_STATUS_WORDS = { submitted: 'Waiting for a leader', accepted: 'Accepted', returned: 'Sent back', withdrawn: 'Withdrawn by the family' };
+  var SR_DETAILS_SAY = {
+    forbidden: 'Only an admin can see a report’s details and who changed it.',
+    offline: 'The pack’s server couldn’t be reached. Try again in a moment.',
+    shape: 'The pack’s server sent something unexpected. Try again.'
+  };
+  function srDetailsMessage(err) {
+    if (err && err.code === 'permission-denied') return SR_DETAILS_SAY.forbidden;
+    if (err && err.code === 'not-found') return LEADER_SR_SAY['not-found'];
+    if (srNotNow(err)) return SR_DETAILS_SAY.offline;
+    return leaderSrMessage(err);
+  }
+  // A step's figures, or null when they aren't whole cents.
+  function srStepFigs(f) {
+    return f && Number.isInteger(f.teCents) && Number.isInteger(f.cashCents)
+      ? { teCents: f.teCents, cashCents: f.cashCents, salesCashCents: Number.isInteger(f.salesCashCents) ? f.salesCashCents : 0 } : null;
+  }
+  // "Trail’s End $123.45 · cash donations $25.00", and the cash from sales when there is some.
+  function srFiguresSay(f) {
+    f = srStepFigs(f);
+    if (!f) return '';
+    return 'Trail’s End ' + fmt(f.teCents) + ' · cash donations ' + fmt(f.cashCents) +
+      (f.salesCashCents > 0 ? ' · cash from popcorn sales not converted ' + fmt(f.salesCashCents) : '');
+  }
+  // What a change did to the figures: ["Trail’s End $120.00 → $110.00", …], only those it changed.
+  // With nothing to compare against (an older step left out), the figures it left.
+  function srFigureChanges(was, now) {
+    was = srStepFigs(was); now = srStepFigs(now);
+    if (!now) return [];
+    if (!was) return [srFiguresSay(now)];
+    var out = [];
+    [['teCents', 'Trail’s End'], ['cashCents', 'Cash donations'], ['salesCashCents', 'Cash from popcorn sales not converted']].forEach(function (k) {
+      if (was[k[0]] !== now[k[0]]) out.push(k[1] + ' ' + fmt(was[k[0]]) + ' → ' + fmt(now[k[0]]));
+    });
+    return out.length ? out : ['The figures stayed the same.'];
+  }
+  // One step of the timeline, as a leader reads it: { head: 'Edited by Kim Admin', lines: [...] },
+  // or null for a step this page doesn't know. The names are the server's (full names, no email).
+  function srStepSay(e) {
+    if (!e || typeof e.action !== 'string') return null;
+    // The server never sends an email; if one ever came, it isn't shown (youth-protection review 3).
+    var n = String(e.byName == null ? '' : e.byName).trim();
+    var who = n && n.indexOf('@') === -1 ? n : 'a pack member';
+    var quote = function (label, t) { return t ? label + ': “' + String(t) + '”' : ''; };
+    var a = e.action, lines = [];
+    var head = '';
+    if (a === 'shift.report') {
+      head = 'Sent by ' + who;
+      lines.push(srFiguresSay(e.figures));
+      if (e.needsConfirm) lines.push('Scouts from more than one family were on the shift, so a second parent needed to confirm it.');
+    } else if (a === 'shift.report.edit') {
+      head = 'Changed by ' + who + ', before a leader looked at it';
+      lines = srFigureChanges(e.was, e.figures);
+      if (e.confirmationCleared) lines.push('The second parent’s confirmation was cleared, since the figures changed.');
+    } else if (a === 'shift.report.withdraw') {
+      head = 'Withdrawn by ' + who;
+    } else if (a === 'shift.confirm') {
+      head = 'Confirmed by ' + who + ', a parent from another family on the shift';
+      lines.push(srFiguresSay(e.figures));
+    } else if (a === 'shift.accept' || a === 'shift.accept.override') {
+      head = 'Accepted by ' + who + (a === 'shift.accept.override' ? ', with a reason' : '');
+      lines.push(srFiguresSay(e.figures));
+      if (e.collected) lines.push('They collected and counted the cash themselves.');
+      if (e.sameFamily) lines.push('Same family as the parent who sent it.');
+      lines.push(quote(a === 'shift.accept.override' ? 'Reason' : 'Note', e.reason));
+    } else if (a === 'shift.return') {
+      head = 'Sent back by ' + who + (e.from === 'accepted' ? ', after it was accepted' : '');
+      lines.push(quote('Reason', e.reason));
+    } else if (a === 'shift.amend') {
+      head = 'Edited by ' + who;
+      lines = srFigureChanges(e.was, e.figures);
+      lines.push(quote('Reason', e.reason));
+    } else if (a.indexOf('shift.salescash.') === 0) {
+      var c = fmt(Number.isInteger(e.salesCashCents) ? e.salesCashCents : 0);
+      var o = a.slice('shift.salescash.'.length);
+      head = (o === 'undo' ? 'Undone by ' : 'Recorded by ') + who;
+      lines.push(o === 'collected' ? c + ' of cash from popcorn sales collected.'
+        : o === 'converted' ? c + ' of cash from popcorn sales converted to credit by the family.'
+        : o === 'replaced' ? c + ' of cash from popcorn sales is the same cash as the newer report on the shift.'
+        : 'Undid the record that ' + c + ' of cash from popcorn sales was ' +
+          (e.undid === 'converted' ? 'converted' : e.undid === 'replaced' ? 'carried to the newer report' : 'collected') + '. It’s still to collect.');
+    } else return null;
+    return { head: head, lines: lines.filter(Boolean) };
+  }
+  // Open the overlay for report `rid`, and read its history. `from` 'history': Back returns there.
+  function openShiftReportDetails(rid, from) {
+    if (!srCanSeeDetails() || !rid) return;
+    ui.overlay = { kind: 'sr-details', rid: rid, from: from === 'history' ? 'history' : '', loading: true, error: '', report: null, history: null, truncated: false };
+    render();
+    srLoadDetails();
+  }
+  // Read the open overlay's report and history. An answer for an overlay since closed or replaced is dropped.
+  function srLoadDetails() {
+    var o = ui.overlay;
+    if (!o || o.kind !== 'sr-details') return Promise.resolve(null);
+    if (!srCanSeeDetails() || !sync.backend || typeof sync.backend.shiftReportDetails !== 'function') {
+      o.loading = false; o.error = SR_DETAILS_SAY.forbidden; render();
+      return Promise.resolve(null);
+    }
+    o.loading = true; o.error = '';
+    return sync.backend.shiftReportDetails(sync.docId, o.rid).then(function (res) {
+      if (ui.overlay !== o) return null;
+      o.loading = false;
+      var rep = res && res.report && res.report.id === o.rid ? res.report : null;
+      if (!rep || !Array.isArray(res.history)) { o.error = SR_DETAILS_SAY.shape; render(); return null; }
+      o.report = rep; o.history = res.history; o.truncated = res.truncated === true;
+      render();
+      return null;
+    }, function (err) {
+      if (ui.overlay !== o) return null;
+      o.loading = false; o.error = srDetailsMessage(err);
+      render();
+      return null;
+    });
+  }
+  function srDetailsAct(act, el) {
+    var ds = (el && el.dataset) || {};
+    if (act === 'sr-details-open') { openShiftReportDetails(String(ds.rid || ''), ds.from); return; }
+    if (act === 'sr-details-retry') { srLoadDetails(); render(); return; }
+    if (act === 'sr-details-back') {
+      var back = ui.overlay && ui.overlay.from === 'history';
+      ui.overlay = back ? { kind: 'sr-history' } : null;
+      render();
+    }
+  }
+  // The button, for an admin: on a season row (`from` 'history') or under a block's accepted report.
+  function srDetailsButton(rid, from) {
+    if (!srCanSeeDetails() || !rid) return '';
+    return '<button type="button" class="btn small ghost" data-act="sr-details-open" data-rid="' + esc(rid) + '"' +
+      (from ? ' data-from="' + esc(from) + '"' : '') + ' aria-label="Details and who changed this report">Details</button>';
+  }
+  function renderShiftReportDetails(o) {
+    var r = o.report || srReport(o.rid);
+    var h = '<div class="overlay" role="dialog" aria-modal="true" aria-label="Shift report details"><div class="overlay-inner">' +
+      '<div class="row no-print" style="margin-bottom:12px">' +
+      '<button type="button" class="btn" data-act="sr-details-back">&larr; Back</button>' +
+      '<button type="button" class="btn" data-act="te-print">Print / Save PDF</button></div>' +
+      '<div class="summary-sheet sr-details"><h1 style="margin:0">Shift report details</h1>' +
+      '<p class="muted small" style="margin:0 0 10px">Admins only. What this report says now, and every change to it.</p>';
+    if (!srCanSeeDetails()) return h + '<p class="small warn">' + esc(SR_DETAILS_SAY.forbidden) + '</p></div></div></div>';
+    if (r) {
+      var blk = srBlockOf(r);
+      var fact = function (k, v) { return '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>'; };
+      var d = new Date(r.submittedAt || 0);
+      var date = blk && blk.sf.date ? blk.sf.date : (r.submittedAt ? d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) : '');
+      h += '<dl class="sr-facts">' +
+        fact('Storefront', blk ? String(blk.sf.name || 'Storefront') : '(no longer on the schedule)') +
+        (date ? fact('Date', fmtDate(date)) : '') +
+        (blk ? fact('Shift', fmtTimeRange(blk.b.start, blk.b.end) || String(blk.b.label || '')) : '') +
+        fact('Sent by', (srNameClean(r.submittedByName) || 'a family') + (r.submittedAt ? ' · ' + srWhen(r.submittedAt) : '')) +
+        fact('Status', SR_STATUS_WORDS[r.status] || String(r.status || '')) +
+        fact('Trail’s End', fmt(r.teCents || 0)) + fact('Cash donations', fmt(r.cashCents || 0)) +
+        fact('Cash from popcorn sales not converted', fmt(r.salesCashCents || 0) +
+          (r.salesCashCents > 0 ? ' · ' + (srCashHistorySay(r) || 'still to collect') : '')) +
+        fact('Note', r.note ? '“' + r.note + '”' : 'None') +
+        fact('Second parent', !r.needsConfirm ? 'Not needed: one family on the shift'
+          : r.confirmed ? 'Confirmed by ' + (srNameClean(r.confirmedByName) || 'a parent') + (r.confirmedAt ? ' · ' + srWhen(r.confirmedAt) : '') : 'Not confirmed') +
+        (r.acceptedByName || r.acceptedAt ? fact('Accepted', 'By ' + (ledgerStampClean(r.acceptedByName || '') || 'a leader') + (r.acceptedAt ? ' · ' + srWhen(r.acceptedAt) : '') +
+          (r.collected ? ', who collected and counted the cash' : '') + (r.overridden ? '. With a reason: “' + String(r.acceptNote || '') + '”' : '')) : '') +
+        (r.status === 'returned' ? fact('Sent back', 'By ' + (ledgerStampClean(r.reviewedByName || '') || 'a leader') + (r.reviewedAt ? ' · ' + srWhen(r.reviewedAt) : '') +
+          (r.reviewNote ? ': “' + r.reviewNote + '”' : '')) : '') +
+        '</dl>';
+    }
+    h += '<h2 class="section display" style="margin-top:16px">Who changed what</h2>';
+    if (o.loading) h += '<p class="small muted" role="status">Loading the history…</p>';
+    else if (o.error) {
+      h += '<p class="small warn" role="alert">' + esc(o.error) + '</p>' +
+        '<div class="sr-acts no-print"><button type="button" class="btn small" data-act="sr-details-retry">Try again</button></div>';
+    } else {
+      var steps = arrOf(o.history).map(function (e) { var s = srStepSay(e); return s ? { e: e, s: s } : null; }).filter(Boolean);
+      if (o.truncated) h += '<p class="small muted">Only the latest ' + steps.length + ' changes are shown.</p>';
+      if (!steps.length) h += '<p class="small muted">No changes are recorded for this report.</p>';
+      else {
+        h += '<ol class="sr-timeline">' + steps.map(function (x) {
+          return '<li><p class="small" style="margin:0"><strong>' + esc(x.s.head) + '</strong></p>' +
+            (x.e.at ? '<p class="small muted" style="margin:0">' + esc(srWhen(x.e.at)) + '</p>' : '') +
+            x.s.lines.map(function (l) { return '<p class="small" style="margin:2px 0 0">' + esc(l) + '</p>'; }).join('') + '</li>';
+        }).join('') + '</ol>';
+      }
     }
     return h + '</div></div></div>';
   }
@@ -30431,7 +30649,7 @@
     'ledger-fix-cancel', 'ledger-void-cancel', 'charge-forgive-cancel', 'plan-adv-cancel',
     'open-summary', 'copy-summary', 'print-summary', 'open-digest', 'copy-digest', 'copy-digest-leaders', 'open-shop', 'copy-shop',
     'print-shop', 'pk-agenda-print', 'print-pk-agenda', 'sf-day-sheet', 'copy-day-sheet', 'sf-glance-open', 'copy-glance',
-    'family-statement', 'copy-statement', 'family-sheet', 'parent-preview-on', 'sr-history-open', 'sr-history-csv', 'sr-history-reasons', 'kit-print-flyer', 'kit-print-qr', 'te-print',
+    'family-statement', 'copy-statement', 'family-sheet', 'parent-preview-on', 'sr-history-open', 'sr-history-csv', 'sr-history-reasons', 'sr-details-open', 'sr-details-retry', 'sr-details-back', 'kit-print-flyer', 'kit-print-qr', 'te-print',
     'copy-archive', 'copy-kickoff', 'makeup-msg', 'copy-makeup-msg', 'join-copy', 'pack-id-copy',
     'export-csv', 'export-ics', 'ledger-log-csv', 'sync-log-csv', 'ledger-voided-csv', 'copy-export', 'download-export',
     'export-json', 'sync-download-local'];
@@ -35238,6 +35456,8 @@
     // Wave 7 — year-end close-out preview + confirm.
     if (o.kind === 'closeout') return renderCloseoutOverlay();
     if (o.kind === 'sr-history') return renderShiftReportHistory();
+    // Keith (2026-10-08) — one report's details and who changed it. Admins only.
+    if (o.kind === 'sr-details') return renderShiftReportDetails(o);
     // Phase 3, C8-8 (owner decision 28) — deleting a season's close-out: an admin's, with a reason.
     if (o.kind === 'del-season') return renderDelSeasonOverlay(o);
     // Wave 19(15) — printable storefront day sheet.
@@ -41249,6 +41469,8 @@
       return;
     }
     if (act === 'sr-history-reasons') { ui.srHistoryReasons = !ui.srHistoryReasons; render(); return; }
+    // Keith (2026-10-08) — one report's details and history, admins only; read-only, so allowed while held.
+    if (act === 'sr-details-open' || act === 'sr-details-retry' || act === 'sr-details-back') { srDetailsAct(act, el); return; }
     // THE PARENTS-MEETING HANDOUT IS THE FAMILY PAGE (owner ruling, 2026-08-31). This used to open
     // a separately authored tier sheet; a second rendering of the same ladder is a second thing to
     // keep in step, and the standings sheet in this very file had already drifted four ways by the

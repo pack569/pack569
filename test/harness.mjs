@@ -15601,9 +15601,10 @@ atest('api shift reports: every role on every verb — pending and strangers get
   w.db.raw.prepare("UPDATE members SET role = 'pending' WHERE uid = 'uid-parent'").run();
   denied(await w.reports('parent'), 'a parent demoted to pending reading');
   denied(await w.report('parent', { blockId: 'b6' }), 'a parent demoted to pending sending');
-  // Pages routes only GET and POST on the list, and only PATCH on one report.
+  // Pages routes only GET and POST on the list, and GET (an admin's, below) and PATCH on one report.
   eq((await w.call('owner', 'DELETE', 'shiftReports')).status, 405, 'DELETE on the list');
-  eq((await w.call('owner', 'GET', 'shiftReport', { rid: parentRid })).status, 405, 'GET on one report');
+  eq((await w.call('owner', 'DELETE', 'shiftReport', { rid: parentRid })).status, 405, 'DELETE on one report');
+  eq((await w.call('owner', 'POST', 'shiftReport', { rid: parentRid }, { body: {} })).status, 405, 'POST on one report');
 });
 
 atest('api shift reports: a report is for a real shift in the parent view, today or in the last 14 days, signed, in whole cents', async () => {
@@ -16121,6 +16122,69 @@ atest('shift report edits: cash from sales already recorded keeps its amount, tw
   ok(!refused({}), 'a good row');
   eq(MIGRATION_FILES.indexOf('0005_shift_report_amendments.sql'), 4, 'the migration, after the first four');
   ok(/canAmendShiftReport = \(role\) => role === 'admin';/.test(readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8')), 'admins only, in the rules');
+});
+
+/* ---- One report's details and history, admins only (Keith, 2026-10-08) ----
+   GET /shift-reports/:rid ([rid].js read, historyOut): the report in full, and its audit rows
+   oldest first, each with who did it by NAME (never an account id or an email) and the figures
+   before a change. "A way for admins to see who makes the edits for shift reports." */
+atest('shift report history: an admin reads one report’s whole story — who sent, changed, accepted and edited it, by name, oldest first', async () => {
+  const w = await srWorld();
+  const rid = (await w.report('parent', { blockId: 'b1' })).body.report.id;
+  eq((await w.act('parent', rid, { action: 'edit', teCents: 11000, cashCents: 2500, salesCashCents: 500, note: 'Recounted', attest: true })).status, 200, 'the sender’s edit');
+  eq((await w.act('editor', rid, { action: 'accept', teCents: 11000, cashCents: 2500, salesCashCents: 500, collected: true })).status, 200, 'accepted');
+  eq((await w.act('admin2', rid, { action: 'salescash', outcome: 'collected', salesCashCents: 500 })).status, 200, 'cash collected');
+  eq((await w.act('admin2', rid, { action: 'salescash', outcome: null, salesCashCents: 500 })).status, 200, 'and undone');
+  eq((await w.act('owner', rid, { action: 'amend', teCents: 10000, cashCents: 2500, salesCashCents: 500, wasTeCents: 11000, wasCashCents: 2500,
+    wasSalesCashCents: 500, reason: 'Rained out; wagon sales' })).status, 200, 'an admin’s edit');
+  const hist = (who, id) => w.call(who, 'GET', 'shiftReport', { rid: id || rid });
+  // Admins only. Everyone else gets the one fixed 403, whether or not the report is there.
+  for (const who of ['editor', 'viewer', 'parent', 'newbie', 'pending', 'stranger']) {
+    denied(await hist(who), who + ' reading a report’s history');
+    denied(await hist(who, '00000000-0000-0000-0000-000000000000'), who + ' reading a report that is not there');
+  }
+  eq((await hist('owner', '00000000-0000-0000-0000-000000000000')).status, 404, 'an admin, no such report');
+  eq((await hist('owner', 'not a/real id')).status, 404, 'an admin, a malformed id');
+  const r = await hist('admin2');
+  eq([r.status, r.body.report.id, r.body.report.teCents, r.body.report.amendments.length, r.body.truncated], [200, rid, 10000, 1, false], 'the report in full');
+  const h = r.body.history;
+  eq(h.map((e) => [e.action, e.byName]), [['shift.report', 'Test parent'], ['shift.report.edit', 'Test parent'], ['shift.accept', 'Test editor'],
+    ['shift.salescash.collected', 'Test admin2'], ['shift.salescash.undo', 'Test admin2'], ['shift.amend', 'Test owner']], 'every step, oldest first, by name');
+  ok(h.every((e, i) => typeof e.at === 'number' && (i === 0 || e.at >= h[i - 1].at)), 'each step’s time, in order');
+  eq([h[0].figures, h[0].needsConfirm], [{ teCents: 12345, cashCents: 2500, salesCashCents: 0 }, false], 'what was sent');
+  eq([h[1].was, h[1].figures, h[1].confirmationCleared], [{ teCents: 12345, cashCents: 2500, salesCashCents: 0 }, { teCents: 11000, cashCents: 2500, salesCashCents: 500 }, false],
+    'the sender’s edit: was and now');
+  eq([h[2].figures.teCents, h[2].collected, h[2].sameFamily, h[2].reason], [11000, true, false, ''], 'the accept');
+  eq([h[3].outcome, h[3].salesCashCents, h[4].outcome, h[4].undid], ['collected', 500, 'undo', 'collected'], 'the cash from sales, and its undo');
+  eq([h[5].was, h[5].figures, h[5].reason], [{ teCents: 11000, cashCents: 2500, salesCashCents: 500 }, { teCents: 10000, cashCents: 2500, salesCashCents: 500 },
+    'Rained out; wagon sales'], 'the admin’s edit: was, now, why');
+  // Never an account id or an email in the history; only the listed fields.
+  const text = JSON.stringify(h);
+  ok(!/uid-|@example\.com/.test(text), 'an account id or an email in the history: ' + text);
+  ok(h.every((e) => Object.keys(e).every((k) => ['at', 'action', 'byName', 'figures', 'was', 'needsConfirm', 'confirmationCleared', 'collected', 'sameFamily',
+    'reason', 'from', 'outcome', 'salesCashCents', 'undid'].indexOf(k) !== -1)), 'a field that is not in the list');
+  // Names: the member's own now; else what the detail kept; else the name it was sent under; else 'a former member'.
+  w.db.raw.prepare("UPDATE members SET name = 'parent@example.com' WHERE uid = 'uid-parent'").run();
+  w.db.raw.prepare("DELETE FROM members WHERE uid = 'uid-editor'").run();
+  w.db.raw.prepare("UPDATE members SET name = 'Owner Renamed' WHERE uid = 'uid-owner'").run();
+  const audit = (pack, uid, action, detail) => w.db.raw.prepare('INSERT INTO audit (pack_id, at, uid, action, detail) VALUES (?, ?, ?, ?, ?)')
+    .run(pack, Date.now() + 1000, uid, action, typeof detail === 'string' ? detail : JSON.stringify(detail));
+  audit(API_PACK, 'uid-gone', 'shift.return', { report: rid, reason: 'Old row', from: 'accepted' });
+  audit(API_PACK, 'uid-gone', 'shift.return', 'not json {"report":"' + rid + '"}');
+  audit(API_PACK_B, 'uid-owner', 'shift.return', { report: rid, reason: 'Another pack' });
+  audit(API_PACK, 'uid-owner', 'member.role', { report: rid });
+  audit(API_PACK, 'uid-owner', 'shift.return', { report: rid + 'x', reason: 'Another report' });
+  const h2 = (await hist('owner')).body.history;
+  eq(h2.map((e) => e.byName), ['Test parent', 'Test parent', 'Test editor', 'Test admin2', 'Test admin2', 'Owner Renamed', 'a former member'],
+    'an email name falls back to the name it was sent under; a removed leader to the detail’s; nobody to “a former member”');
+  eq([h2[6].action, h2[6].reason, h2[6].from], ['shift.return', 'Old row', 'accepted'], 'only this pack’s shift rows for this report; a detail that isn’t JSON is skipped');
+  // At most SR_HISTORY_MAX steps: the newest, still oldest first, and it says so.
+  const many = (await w.report('viewer', { blockId: 'b4' })).body.report.id;
+  for (let i = 0; i < 205; i++) w.db.raw.prepare('INSERT INTO audit (pack_id, at, uid, action, detail) VALUES (?, ?, ?, ?, ?)')
+    .run(API_PACK, Date.now() + 2000 + i, 'uid-owner', 'shift.return', JSON.stringify({ report: many, reason: 'r' + i }));
+  const big = (await hist('owner', many)).body;
+  eq([big.history.length, big.truncated, big.history[0].reason, big.history[199].reason], [200, true, 'r5', 'r204'], 'capped at the newest 200');
+  ok(/canReadShiftReportHistory = \(role\) => role === 'admin';/.test(readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8')), 'admins only, in the rules');
 });
 
 atest('api shift reports: SETUP.md Part C describes the rules the server holds', async () => {
@@ -17841,6 +17905,7 @@ function srLeaderCtx(o) {
        'srParentStore', 'srHomeFamilyOn', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
        'srCanAmend', 'srAmendNotMine', 'srAmends', 'srAcceptedFigures', 'srAmendSay', 'srAmendToBlock', 'srAmendMirror', 'renderShiftReportAmendForm', 'amendShiftReport',
+       'srCanSeeDetails', 'srDetailsButton',
        'shiftReportCents', 'SHIFT_REPORT_MAX_CENTS'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }
     function shiftReportToday() { return todayISO(); }   // the pack's day, here the test's`, ctx);
@@ -19308,6 +19373,114 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
   ok(/Print or download this season’s record first\. <button type="button" class="btn small" data-act="sr-history-open">Shift reports this season<\/button>/.test(slice('renderCloseoutOverlay')),
     'not offered at close-out');
   ok(/'sr-history-open', 'sr-history-csv'/.test(slice('HELD_ACTS')), 'refused while the reload gate holds, though it only reads');
+});
+
+// Keith (2026-10-08) — one report's details and who changed it, admins only.
+const SR_DETAILS_FNS = ['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'SR_HISTORY_CSV_HEAD',
+  'SR_HISTORY_REASONS_HEAD', 'srCashHistorySay', 'srAmendHistorySay', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE',
+  'renderShiftReportHistory', 'SR_STATUS_WORDS', 'SR_DETAILS_SAY', 'srDetailsMessage', 'srStepFigs', 'srFiguresSay', 'srFigureChanges', 'srStepSay',
+  'openShiftReportDetails', 'srLoadDetails', 'srDetailsAct', 'renderShiftReportDetails'];
+function srDetailsCtx(o) {
+  const L = srLeaderCtx(Object.assign({ role: 'admin', uid: 'uid-kim', name: 'Kim Admin', state: Object.assign(srAmendSt(), { packName: 'Pack 569', budget: { programYear: 2026 } }),
+    reports: [srAmended()] }, o || {}));
+  vm.runInContext(SR_DETAILS_FNS.map(decl).join('\n') + `
+    var detailAsks = [], detailAnswers = [];
+    sync.backend.shiftReportDetails = function (d, rid) {
+      detailAsks.push(rid);
+      return new Promise(function (res, rej) { detailAnswers.push({ res: res, rej: rej }); });
+    };`, L.ctx);
+  L.settle = async () => { for (let k = 0; k < 5; k++) await new Promise((r) => setImmediate(r)); };
+  return L;
+}
+const SR_DETAIL_HISTORY = [
+  { at: Date.parse('2026-10-03T22:40:00Z'), action: 'shift.report', byName: 'Nora Newfamily', figures: { teCents: 12000, cashCents: 2500, salesCashCents: 0 }, needsConfirm: false },
+  { at: Date.parse('2026-10-03T22:50:00Z'), action: 'shift.report.edit', byName: 'Nora Newfamily', was: { teCents: 12000, cashCents: 2500, salesCashCents: 0 },
+    figures: { teCents: 12345, cashCents: 2500, salesCashCents: 0 }, confirmationCleared: false },
+  { at: Date.parse('2026-10-04T14:00:00Z'), action: 'shift.accept', byName: 'Sam Leader', figures: { teCents: 12345, cashCents: 2500, salesCashCents: 0 }, collected: true, sameFamily: false, reason: '' },
+  { at: Date.parse('2026-10-05T16:00:00Z'), action: 'shift.amend', byName: 'Kim Admin', was: { teCents: 12345, cashCents: 2500, salesCashCents: 0 },
+    figures: { teCents: 0, cashCents: 2500, salesCashCents: 0 }, reason: 'Rained out; <b>wagon</b> sales' },
+  { at: Date.parse('2026-10-06T16:00:00Z'), action: 'shift.something.new', byName: 'Kim Admin' }];
+
+atest('shift report details: an admin opens a report’s details from the block or the season’s list, and reads who changed what, was → now', async () => {
+  const L = srDetailsCtx();
+  const line = () => L.run('renderBlockReportLine(state.storefronts[0].blocks[0])');
+  ok(/data-act="sr-return-open" data-rid="rep-1">Send back<\/button><button type="button" class="btn small ghost" data-act="sr-details-open" data-rid="rep-1" aria-label="Details and who changed this report">Details<\/button>/.test(line()),
+    'an admin’s Details beside Edit and Send back');
+  // A job is never the gate: the member role is. Editors and viewers have no Details at all.
+  for (const role of ['editor', 'viewer']) {
+    const X = srDetailsCtx({ role });
+    ok(!/sr-details-open/.test(X.run('renderBlockReportLine(state.storefronts[0].blocks[0])')), role + '’s Details on the block');
+    ok(!/sr-details-open|Details<\/span>/.test(X.run('renderShiftReportHistory()')), role + '’s Details in the season’s list');
+    X.run("srDetailsAct('sr-details-open', { dataset: { rid: 'rep-1' } })");
+    eq([X.get('ui.overlay'), X.get('detailAsks')], [null, []], role + ' opening the details anyway');
+  }
+  // The season's list: a Details button on every row, for an admin, kept off the printout.
+  const hist = L.run('renderShiftReportHistory()');
+  ok(/<th scope="col" class="no-print"><span class="visually-hidden">Details<\/span><\/th>/.test(hist) &&
+    /<tr><td class="no-print"><button type="button" class="btn small ghost" data-act="sr-details-open" data-rid="rep-1" data-from="history"/.test(hist), 'the season’s list');
+  // Open it from the list: the report at once, the history once the server answers.
+  L.run("ui.overlay = { kind: 'sr-history' }; srDetailsAct('sr-details-open', { dataset: { rid: 'rep-1', from: 'history' } })");
+  eq([L.get('ui.overlay.kind'), L.get('ui.overlay.from'), L.get('detailAsks')], ['sr-details', 'history', ['rep-1']], 'opened, and asked');
+  let html = L.run('renderShiftReportDetails(ui.overlay)');
+  ok(/Loading the history…/.test(html) && /<dt>Sent by<\/dt><dd>Nora Newfamily · /.test(html) && /<dt>Storefront<\/dt><dd>Kroger<\/dd>/.test(html), 'loading, with the report shown');
+  L.run(`detailAnswers[0].res(${JSON.stringify({ report: srAmended({ acceptedAt: Date.parse('2026-10-04T14:00:00Z'), collected: true }), history: SR_DETAIL_HISTORY, truncated: false })})`);
+  await L.settle();
+  html = L.run('renderShiftReportDetails(ui.overlay)');
+  ok(!/Loading/.test(html), 'still loading');
+  ok(/<dt>Trail’s End<\/dt><dd>\$0\.00<\/dd>/.test(html) && /<dt>Status<\/dt><dd>Accepted<\/dd>/.test(html) && /<dt>Note<\/dt><dd>“Counted with Jo”<\/dd>/.test(html) &&
+    /<dt>Second parent<\/dt><dd>Not needed: one family on the shift<\/dd>/.test(html) && /<dt>Accepted<\/dt><dd>By Sam Leader · [^<]*, who collected and counted the cash<\/dd>/.test(html),
+    'the facts now in force');
+  const steps = [...html.matchAll(/<li><p class="small" style="margin:0"><strong>([^<]*)<\/strong><\/p>(.*?)<\/li>/g)].map((m) => [m[1], m[2].replace(/<[^>]+>/g, '|')]);
+  eq(steps.map((x) => x[0]), ['Sent by Nora Newfamily', 'Changed by Nora Newfamily, before a leader looked at it', 'Accepted by Sam Leader', 'Edited by Kim Admin'],
+    'every step, oldest first; one this page doesn’t know is left out');
+  ok(/Trail’s End \$120\.00 → \$123\.45/.test(steps[1][1]) && !/Cash donations/.test(steps[1][1]), 'the family’s change: only what changed, was → now');
+  ok(/Trail’s End \$123\.45 → \$0\.00/.test(steps[3][1]) && /Reason: “Rained out; &lt;b&gt;wagon&lt;\/b&gt; sales”/.test(steps[3][1]), 'the admin’s edit, with its reason, escaped');
+  ok(/They collected and counted the cash themselves\./.test(steps[2][1]), 'how it was accepted');
+  ok(!/<table/.test(html) && /<ol class="sr-timeline">/.test(html), 'a list, not a wide table, so a phone doesn’t scroll sideways');
+  ok(/data-act="te-print">Print \/ Save PDF/.test(html), 'printable');
+  // Back returns to the season’s list it came from; from the block, it closes.
+  L.run("srDetailsAct('sr-details-back', {})");
+  eq(L.get('ui.overlay'), { kind: 'sr-history' }, 'back to the list');
+  L.run("srDetailsAct('sr-details-open', { dataset: { rid: 'rep-1' } }); srDetailsAct('sr-details-back', {})");
+  eq(L.get('ui.overlay'), null, 'from the block, Back closes it');
+  // An answer for an overlay since closed is dropped.
+  L.run(`detailAnswers[1].res(${JSON.stringify({ report: srAmended(), history: [] })})`);
+  await L.settle();
+  eq(L.get('ui.overlay'), null, 'a late answer reopened it');
+  // Refused or unreachable: said in words, with Try again.
+  const E = srDetailsCtx();
+  E.run("srDetailsAct('sr-details-open', { dataset: { rid: 'rep-1' } })");
+  E.run("detailAnswers[0].rej({ code: 'permission-denied' })");
+  await E.settle();
+  html = E.run('renderShiftReportDetails(ui.overlay)');
+  ok(/role="alert">Only an admin can see a report’s details and who changed it\.<\/p>/.test(html) && /data-act="sr-details-retry">Try again</.test(html), 'a refusal');
+  E.run("srDetailsAct('sr-details-retry', {})");
+  eq([E.get('detailAsks.length'), E.get('ui.overlay.loading')], [2, true], 'Try again asks again');
+  E.run("detailAnswers[1].rej({ code: 'unavailable' })");
+  await E.settle();
+  ok(/The pack’s server couldn’t be reached\. Try again in a moment\./.test(E.run('renderShiftReportDetails(ui.overlay)')), 'offline');
+  E.run("srDetailsAct('sr-details-retry', {})");
+  E.run("detailAnswers[2].res({ report: { id: 'someone-else' }, history: [] })");
+  await E.settle();
+  ok(/The pack’s server sent something unexpected\./.test(E.run('renderShiftReportDetails(ui.overlay)')), 'an answer about another report');
+  // The step words for the rest of the actions.
+  const say = (e) => L.get(`srStepSay(${JSON.stringify(e)})`);
+  eq(say({ action: 'shift.accept.override', byName: 'Sam Leader', figures: { teCents: 100, cashCents: 0 }, sameFamily: true, reason: 'Nobody else there' }),
+    { head: 'Accepted by Sam Leader, with a reason', lines: ['Trail’s End $1.00 · cash donations $0.00', 'Same family as the parent who sent it.', 'Reason: “Nobody else there”'] }, 'an override');
+  eq(say({ action: 'shift.return', byName: 'Lee', from: 'accepted', reason: 'Recount' }), { head: 'Sent back by Lee, after it was accepted', lines: ['Reason: “Recount”'] }, 'a send-back');
+  eq(say({ action: 'shift.confirm', byName: 'Bo Parent', figures: { teCents: 100, cashCents: 0, salesCashCents: 50 } }).lines,
+    ['Trail’s End $1.00 · cash donations $0.00 · cash from popcorn sales not converted $0.50'], 'a confirm');
+  eq(say({ action: 'shift.salescash.undo', byName: 'Lee', salesCashCents: 500, undid: 'collected' }).lines,
+    ['Undid the record that $5.00 of cash from popcorn sales was collected. It’s still to collect.'], 'an undo');
+  eq(say({ action: 'shift.report.edit', byName: 'x@example.com', was: null, figures: { teCents: 100, cashCents: 0 }, confirmationCleared: true }),
+    { head: 'Changed by a pack member, before a leader looked at it', lines: ['Trail’s End $1.00 · cash donations $0.00', 'The second parent’s confirmation was cleared, since the figures changed.'] },
+    'nothing to compare against, and never an email');
+  // Wired in: the router, the click handler, and read-only while the reload gate holds.
+  ok(/if \(o\.kind === 'sr-details'\) return renderShiftReportDetails\(o\);/.test(slice('renderOverlay')), 'the overlay router');
+  ok(/act === 'sr-details-open' \|\| act === 'sr-details-retry' \|\| act === 'sr-details-back'\) \{ srDetailsAct\(act, el\); return; \}/.test(slice('handleAction')), 'the click handler');
+  ok(/'sr-details-open', 'sr-details-retry', 'sr-details-back'/.test(slice('HELD_ACTS')), 'held while it only reads');
+  ok(/shiftReportDetails: function \(docId, rid\) \{\n\s+return this\.call\('GET', this\.packPath\(docId, '\/shift-reports\/' \+ encodeURIComponent\(rid\)\)\);/.test(slice('apiBackend')), 'the backend call');
+  ok(!/srStepSay|shiftReportDetails|sr-details/.test(codeOnly(BPV())), 'buildParentView publishes any of it');
 });
 
 test('my shifts: the family’s card lists only their own family’s shifts, marked, and the toggle shows the rest in order', () => {

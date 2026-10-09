@@ -576,6 +576,14 @@ pack record, so a parent who can send one still can't write anything else.
   and when, and is audited as `shift.amend`. The record of the accept itself doesn't change.
   The family sees the new figures, the reason and the admin's first name; leaders see every
   correction in full.
+- **One report's details and history** (Keith, 2026-10-08): only an `admin`, never an
+  `editor`, `viewer` or parent, can read one report together with every step recorded for it
+  in the `audit` table, oldest first: who sent it, who changed it and how ("was → now"), who
+  confirmed, accepted, sent back or corrected it, what became of its cash from popcorn sales,
+  and the reasons given. Each step names the person by their member name (or, if they've left
+  the pack, the name kept when the step was written), never by account id or email. Anyone
+  else is refused with the same 403 whether or not the report exists. At most the newest 200
+  steps are returned.
 - **A different family from the sender** (Keith, 2026-10-01): the accepting leader must not be
   in the sender's family. The server works out each account's families from the stored pack
   record: the families of the scouts an admin has linked that account to on the Members card,

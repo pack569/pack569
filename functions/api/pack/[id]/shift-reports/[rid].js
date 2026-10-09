@@ -1,3 +1,9 @@
+// GET   /api/pack/:id/shift-reports/:rid   one report, and everything that happened to it (Keith,
+//        2026-10-08): ADMINS ONLY (rules.js canReadShiftReportHistory; an editor, a viewer or a
+//        parent gets the one fixed 403, whether or not the report exists). Answers
+//        { report, history, truncated }: the report as a leader reads it (reportOut, in full), and
+//        its audit rows oldest first, at most SR_HISTORY_MAX (the newest; truncated says some
+//        older ones were left out). See historyOut below for what each step carries.
 // PATCH /api/pack/:id/shift-reports/:rid   change one shift report, by `action`:
 //   { action: 'edit', teCents, cashCents, salesCashCents?, note?, attest: true }   the sender, while it is waiting
 //   { action: 'withdraw' }                                        the sender, while it is waiting
@@ -77,7 +83,7 @@
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, reportMoved, samePerson, notShiftParent, needsConfirm,
   notCollected, sameFamilyRefused, packMoved, salesCashRecorded } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
-import { canSubmitShiftReport, canReviewShiftReport, canAmendShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
+import { canSubmitShiftReport, canReviewShiftReport, canAmendShiftReport, canReadAllShiftReports, canReadShiftReportHistory, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
   SHIFT_REPORT_NOTE_MAX, shiftConfirmers, sameFamily, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS } from '../../../../_lib/rules.js';
 import { reportOut, readReport, readReportAmendments, readPackRecord, readPackForFamily, STILL_MEMBER, SUBMIT_ROLES } from './index.js';
 
@@ -330,4 +336,111 @@ async function patch({ request, db, packId, role, user, member, params }) {
     await readReportAmendments(db, packId, rid)) });
 }
 
-export const onRequest = route({ PATCH: withMember(patch) });
+// ---- One report's history (Keith, 2026-10-08) ----
+// "A way for admins to see who makes the edits for shift reports." Every change to a report already
+// writes an audit row in the same batch as the change (above, and index.js's POST), naming the
+// report in its detail. This reads them back for one report, for an admin only.
+//   - Rows of this pack, a shift-report action, whose detail names this report. A detail that is
+//     not JSON is skipped (json_valid inside the CASE, so json_extract never sees it).
+//   - The audit holds account ids, not names. Each step's name is the account's member name now,
+//     else the name the detail kept when it was written, else (for the sender's own steps) the
+//     name the report was sent under, else 'a former member'. Full names, as reportOut gives
+//     leaders, and never an email address (leaderName). No account id is sent: nothing on the
+//     page needs one, and the detail's own (submittedBy, confirmedBy) stay here.
+//   - Each step carries only what is listed in historyOut, never the detail as it is.
+//   - A sender's edit carries the figures before it (`was`), from the step before it in the
+//     timeline, so the page can say "was → now"; an admin's edit kept its own `was`.
+export const SR_HISTORY_MAX = 200;
+export const SR_HISTORY_ACTIONS = ['shift.report', 'shift.report.edit', 'shift.report.withdraw', 'shift.confirm', 'shift.accept',
+  'shift.accept.override', 'shift.return', 'shift.salescash.collected', 'shift.salescash.converted', 'shift.salescash.replaced',
+  'shift.salescash.undo', 'shift.amend'];
+const SR_SENDER_ACTIONS = ['shift.report', 'shift.report.edit', 'shift.report.withdraw'];
+// The name the detail kept, by action: who did it, as their member name was at the time.
+const SR_DETAIL_NAME = { 'shift.confirm': 'confirmerName', 'shift.accept': 'reviewerName', 'shift.accept.override': 'reviewerName',
+  'shift.return': 'reviewerName', 'shift.amend': 'byName' };
+// A name as a leader reads it: the whole name, trimmed, and never an email address.
+export const leaderName = (n) => {
+  const s = String(n == null ? '' : n).trim();
+  return s && s.indexOf('@') === -1 ? s.slice(0, 120) : null;
+};
+const figuresOf = (d) => (d && Number.isInteger(d.teCents) && Number.isInteger(d.cashCents)
+  ? { teCents: d.teCents, cashCents: d.cashCents, salesCashCents: Number.isInteger(d.salesCashCents) ? d.salesCashCents : 0 } : null);
+const textOf = (v) => (typeof v === 'string' ? v.slice(0, 300) : '');
+// The steps, oldest first. `rows` are audit rows (id, at, uid, action, detail), oldest first;
+// `names` is { uid: member name } for the accounts still in the pack; `report` is the row.
+export function historyOut(rows, names, report) {
+  let fig = null;
+  const out = [];
+  for (const row of rows) {
+    if (SR_HISTORY_ACTIONS.indexOf(row.action) === -1) continue;
+    let d = {};
+    try { d = JSON.parse(row.detail); } catch (e) { d = {}; }
+    if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
+    const a = row.action;
+    const member = Object.prototype.hasOwnProperty.call(names, row.uid);
+    const sender = SR_SENDER_ACTIONS.indexOf(a) !== -1 && row.uid === report.submitted_by_uid;
+    const byName = (member && leaderName(names[row.uid])) ||
+      leaderName(a.indexOf('shift.salescash.') === 0 ? d.byName : d[SR_DETAIL_NAME[a]]) ||
+      (sender && leaderName(report.submitted_by_name)) || (member ? 'a pack member' : 'a former member');
+    const e = { at: row.at, action: a, byName };
+    if (a === 'shift.report') {
+      e.figures = figuresOf(d);
+      e.needsConfirm = d.needsConfirm === true;
+      fig = e.figures;
+    } else if (a === 'shift.report.edit') {
+      e.was = fig;
+      e.figures = figuresOf(d);
+      e.confirmationCleared = d.confirmationCleared === true;
+      fig = e.figures;
+    } else if (a === 'shift.confirm') {
+      e.figures = figuresOf(d);
+      fig = e.figures || fig;
+    } else if (a === 'shift.accept' || a === 'shift.accept.override') {
+      e.figures = figuresOf(d);
+      e.collected = d.collected === true;
+      e.sameFamily = d.sameFamily === true;
+      e.reason = textOf(a === 'shift.accept.override' ? d.reason : d.reviewNote);
+      fig = e.figures || fig;
+    } else if (a === 'shift.return') {
+      e.reason = textOf(d.reason);
+      e.from = d.from === 'accepted' ? 'accepted' : 'submitted';
+    } else if (a === 'shift.amend') {
+      e.was = figuresOf(d.was);
+      e.figures = figuresOf(d.now);
+      e.reason = textOf(d.reason);
+      fig = e.figures || fig;
+    } else if (a.indexOf('shift.salescash.') === 0) {
+      e.outcome = a.slice('shift.salescash.'.length);
+      e.salesCashCents = Number.isInteger(d.salesCashCents) ? d.salesCashCents : 0;
+      if (e.outcome === 'undo' && d.was && typeof d.was === 'object') {
+        const w = d.was.outcome;
+        e.undid = w === 'collected' || w === 'converted' || w === 'replaced' ? w : null;
+      }
+    }
+    out.push(e);
+  }
+  return out;
+}
+// The audit rows that name report `rid`, as SQL bound with (packId, rid).
+const HISTORY_WHERE = "pack_id = ? AND action LIKE 'shift.%' AND (CASE WHEN json_valid(detail) THEN json_extract(detail, '$.report') END) = ?";
+
+async function read({ db, packId, role, user, params }) {
+  // Anyone but an admin gets the one fixed 403 before anything is read, whatever the id.
+  if (!canReadShiftReportHistory(role)) return forbidden();
+  const rid = reportId(params);
+  const row = await readReport(db, packId, rid);
+  if (!row) return notFound();
+  const r = await db.prepare('SELECT id, at, uid, action, detail FROM audit WHERE ' + HISTORY_WHERE + ' ORDER BY id DESC LIMIT ?')
+    .bind(packId, rid, SR_HISTORY_MAX + 1).all();
+  const rows = (r.results || []).slice(0, SR_HISTORY_MAX).reverse();
+  // The names of the accounts in those rows that are still members. A subquery, not a list of ids:
+  // D1 binds at most 100 values.
+  const m = await db.prepare('SELECT uid, name FROM members WHERE pack_id = ? AND uid IN (SELECT uid FROM audit WHERE ' + HISTORY_WHERE + ')')
+    .bind(packId, packId, rid).all();
+  const names = {};
+  for (const x of m.results || []) names[x.uid] = x.name;
+  return json(200, { report: reportOut(row, user.uid, true, await readReportAmendments(db, packId, rid)),
+    history: historyOut(rows, names, row), truncated: (r.results || []).length > SR_HISTORY_MAX });
+}
+
+export const onRequest = route({ GET: withMember(read), PATCH: withMember(patch) });
