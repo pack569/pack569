@@ -184,7 +184,8 @@ calendar but not the money" is impossible to do by permission alone. Instead the
   successful save (and once when a leader connects). It contains **only**:
   - always: the pack name and program year; the program year's events (July 1 to June 30) — storefront dates with
     their shift windows and, for the optional end-of-shift popcorn count, each product's
-    name and id (`products`; nothing else from the Inventory), den/pack meetings with time and location note, dated activities
+    name and id (`products`: the products handed out to that storefront, or every named product
+    when none were recorded going there; nothing else from the Inventory), den/pack meetings with time and location note, dated activities
     with time, place and which dens; the derby's name and date; the camping trips as leaders
     wrote them, **including each trip's cost line**, in date order, with each trip's first and
     last day and online sign-up deadline as dates (`startDate`, `endDate`,
@@ -558,7 +559,7 @@ pack record, so a parent who can send one still can't write anything else.
 - **Popcorn left on the table** (Keith, 2026-10-08): a report may also say how many
   containers of each product were still on the table when the shift ended. It is optional: a
   product left blank wasn't counted. Only the products the parent view lists for that
-  storefront can be counted, each once, as a whole number from 0 to 10,000, at most 40 of
+  storefront (those handed out to it, or every product when none were) can be counted, each once, as a whole number from 0 to 10,000, at most 40 of
   them. The sender can change it while the report waits; an `admin` can correct it on an
   accepted report, like the figures (kept before and after, audited `shift.amend`). A second
   parent's confirmation and a leader's accept don't touch it. Leaders and the family who sent

@@ -16912,7 +16912,8 @@
   // PUBLISHED — the whole list; keep it and SETUP.md Part C ("What a parent sees") in step:
   //   always: pack name, program year; the season's events (storefront dates with their shift
   //   windows and, for the optional end-of-shift popcorn count, each product's `id` and `name`
-  //   as `products` (Keith, 2026-10-08), meetings with time and where, activities with time,
+  //   as `products` (Keith, 2026-10-08): those handed out to that storefront, or every named
+  //   product when none were recorded going there, meetings with time and where, activities with time,
   //   place and dens); the
   //   derby's name and date; camping trips as leaders typed them, including each trip's
   //   cost line, in date order, with each trip's ISO startDate, endDate and registrationDeadline
@@ -17090,7 +17091,17 @@
         }).filter(function (s) { return !!s.when; });
         var ev = { kind: 'storefront', sfId: String(sf.id || ''), date: sf.date, title: String(sf.name || 'Storefront'), detail: '' };
         if (shifts.length) ev.shifts = shifts;
-        if (shifts.length && countProducts.length) ev.products = countProducts.map(function (p) { return { id: p.id, name: p.name }; });
+        // Review round 1 (popcorn kernel): only the products the Inventory handed out to THIS
+        // storefront (a positive hand-out; a return is not one), so the form lists what is on the
+        // table; every named product when it recorded none going there. Still id and name only.
+        if (shifts.length && countProducts.length) {
+          var sentHere = {};
+          (state.inventory && Array.isArray(state.inventory.distributions) ? state.inventory.distributions : []).forEach(function (d) {
+            if (d && d.target && d.target.kind === 'storefront' && d.target.id === sf.id && Number(d.containers) > 0) sentHere[d.productId] = true;
+          });
+          var offered = countProducts.filter(function (p) { return sentHere[p.id] === true; });
+          ev.products = (offered.length ? offered : countProducts).map(function (p) { return { id: p.id, name: p.name }; });
+        }
         events.push(ev);
       });
       // Phase 2 — one pass over events[]. Parents get the calendar and nothing else: no
@@ -24786,6 +24797,9 @@
     h += renderWeatherCard(sf);
 
     blocksInDayOrder(sf).forEach(function (b) { h += renderBlock(sf, b); });
+    // Review round 1 (popcorn kernel): the end of the day's count, from the last counted shift.
+    var eod = srEndOfDayLine(sf);
+    if (eod) h += '<div class="card">' + eod + '</div>';
     h += '<button type="button" class="btn" data-act="add-block" data-id="' + sf.id + '">+ Add another block</button>';
     return h;
   }
@@ -25355,11 +25369,19 @@
     h += '<button type="button" class="btn" data-act="sr-return-open" data-rid="' + esc(r.id) + '">Send back</button></div>';
     return h + '</div>';
   }
-  // Keith (2026-10-08) — the count of popcorn left on the table a family may send with a report, as
-  // leaders read it: per product, in the Inventory's own order, beside what the Inventory sent to
-  // that storefront where it sent any ("sent 12 · left 4 · so about 8 sold"). INFORMATION ONLY:
-  // accepting a report never changes state.inventory (Keith's choice); stock coming back is still
-  // recorded on the Inventory tab, by a leader, as before.
+  // Keith (2026-10-08) — the count of popcorn left at the end of a shift that a family may send with
+  // a report, as leaders read it: per product, in the Inventory's own order. INFORMATION ONLY:
+  // accepting a report never changes state.inventory (Keith's choice); what comes back is still
+  // recorded on the Inventory tab, by a leader, after the storefront is closed out in Trail's End.
+  // Review round 1 (popcorn kernel, parent experience): how much sold THIS SHIFT needs the stock at
+  // the START of the shift (srCountStart). A storefront has several shifts and one trunk:
+  //   - the first shift starts with what went to the storefront: the Inventory's hand-outs to it,
+  //     GROSS — a return is never subtracted (it comes back at the end of the day, after every
+  //     shift's count), it is said separately, "4 brought back since";
+  //   - a later shift starts with the closest earlier shift's count for that product, from its
+  //     report (waiting or accepted; never one sent back or withdrawn);
+  //   - the earlier shift didn't count it, or stock was handed out again ON the storefront day
+  //     (a second hand-out dated that day), and all that can be said is what sold today so far.
   function srProductName(pid) {
     var p = arrOf(state.inventory && state.inventory.products).filter(function (x) { return x && x.id === pid; })[0];
     var nm = p ? String(p.name || '').replace(/\s+/g, ' ').trim() : '';   // as the parent view names it
@@ -25371,28 +25393,71 @@
     return arrOf(list).filter(function (x) { return x && typeof x.productId === 'string' && Number.isInteger(x.left); })
       .slice().sort(function (a, b) { return at(a) - at(b) || (a.productId < b.productId ? -1 : 1); });
   }
-  // Containers of product `pid` the Inventory sent to storefront `sfId`, net of any brought back;
-  // null when it recorded none (distributions with target { kind: 'storefront', id }).
-  function srSentTo(sfId, pid) {
-    var n = null;
+  // The Inventory's hand-outs of product `pid` to storefront `sfId`: { went (positive hand-outs,
+  // gross), back (returns, as a positive number), addedOnDay (a hand-out after the first is dated
+  // `day`) }, or null when it recorded none going there.
+  function srSentTo(sfId, pid, day) {
+    var went = 0, back = 0, n = 0, added = false;
     arrOf(state.inventory && state.inventory.distributions).forEach(function (d) {
-      if (d && d.productId === pid && d.target && d.target.kind === 'storefront' && d.target.id === sfId) n = (n || 0) + (Number(d.containers) || 0);
+      if (!d || d.productId !== pid || !d.target || d.target.kind !== 'storefront' || d.target.id !== sfId) return;
+      var c = Number(d.containers) || 0;
+      if (c > 0) { if (n > 0 && day && d.date === day) added = true; went += c; n += 1; } else back -= c;
     });
-    return n;
+    return went > 0 ? { went: went, back: back, addedOnDay: added } : null;
   }
-  function srCountLine(sfId, x) {
-    var sent = srSentTo(sfId, x.productId);
-    return srProductName(x.productId) + ': ' + (sent !== null && sent > 0
-      ? 'sent ' + sent + ' · left ' + x.left + (sent >= x.left ? ' · so about ' + (sent - x.left) + ' sold' : ' (more than was sent here)')
-      : 'left ' + x.left);
+  // The report holding a block (waiting or accepted), from the leaders' list.
+  function srHolding(sfId, blockId) {
+    return srReports().filter(function (x) { return x && x.sfId === sfId && x.blockId === blockId && (x.status === 'submitted' || x.status === 'accepted'); })[0] || null;
   }
-  var SR_COUNT_INFO = 'For information only. Accepting doesn’t change the pack’s inventory.';
+  // Where report `r`'s shift started for product `pid`: { n, from: 'sent' | 'shift' | 'today', label,
+  // why }, or null when nothing can be said (nothing recorded going to the storefront).
+  function srCountStart(r, pid) {
+    var sf = getStorefront(r.sfId);
+    var sent = srSentTo(r.sfId, pid, sf && sf.date);
+    var blocks = sf ? blocksInDayOrder(sf) : [];
+    var at = -1;
+    blocks.forEach(function (b, i) { if (b && b.id === r.blockId) at = i; });
+    var today = function (why) { return sent ? { n: sent.went, from: 'today', why: why, sent: sent } : null; };
+    if (sent && sent.addedOnDay) return today('stock was added during the day');
+    if (at <= 0) return sent ? { n: sent.went, from: 'sent', sent: sent } : null;
+    var prev = blocks[at - 1], pr = srHolding(r.sfId, prev.id);
+    var hit = pr ? srCountList(pr.inventory).filter(function (x) { return x.productId === pid; })[0] : null;
+    if (hit) return { n: hit.left, from: 'shift', label: (fmtClock(prev.start) || String(prev.label || 'earlier')) + ' shift', sent: sent };
+    return today('the earlier shift didn’t count, so this can’t be split by shift');
+  }
+  function srCountLine(r, x) {
+    var name = srProductName(x.productId), st = srCountStart(r, x.productId);
+    var back = st && st.sent && st.sent.back > 0 ? ' · ' + st.sent.back + ' brought back since' : '';
+    if (!st) return name + ': ' + x.left + ' left (the Inventory has none recorded going to this storefront, so sold can’t be worked out)';
+    if (x.left > st.n) {
+      return name + ': ' + x.left + ' left — more than the ' + st.n + ' at the start. Stock may have been added during the day, or a count is off.' + back;
+    }
+    if (st.from === 'shift') return name + ': ' + st.n + ' at the start (the ' + st.label + '’s count) · ' + x.left + ' left · about ' + (st.n - x.left) + ' sold this shift' + back;
+    if (st.from === 'today') return name + ': ' + st.n + ' went to this storefront · ' + x.left + ' left · about ' + (st.n - x.left) + ' sold today so far (' + st.why + ')' + back;
+    return name + ': ' + st.n + ' went to this storefront · ' + x.left + ' left · about ' + (st.n - x.left) + ' sold this shift' + back;
+  }
+  var SR_COUNT_INFO = 'For information only. Accepting doesn’t change the Inventory. Record what comes back on Popcorn · Inventory after you close out the storefront in Trail’s End.';
+  var SR_COUNT_HEAD = 'Popcorn left at the end of the shift, counted by the family';
   function srCountHtml(r) {
     var list = srCountList(r && r.inventory);
     if (!list.length) return '';
-    return '<div class="sr-count-read"><p class="small" style="margin:0"><strong>Popcorn left on the table</strong>, counted by the family</p>' +
-      '<ul class="small">' + list.map(function (x) { return '<li>' + esc(srCountLine(r.sfId, x)) + '</li>'; }).join('') + '</ul>' +
+    return '<div class="sr-count-read"><p class="small" style="margin:0"><strong>' + esc(SR_COUNT_HEAD) + '</strong></p>' +
+      '<ul class="small">' + list.map(function (x) { return '<li>' + esc(srCountLine(r, x)) + '</li>'; }).join('') + '</ul>' +
       '<p class="small muted" style="margin:0 0 6px">' + esc(SR_COUNT_INFO) + '</p></div>';
+  }
+  // P3 — the end of a storefront's day, from its LAST counted shift (the latest block whose waiting
+  // or accepted report has a count): what a leader enters as Returning in Trail's End's Close Out
+  // Storefront. Information only; '' when no shift was counted. Leaders only.
+  var SR_END_OF_DAY_WHY = 'This is what you enter as Returning in Trail’s End’s Close Out Storefront.';
+  function srEndOfDayLine(sf) {
+    if (!leaderReportsOn() || !sf) return '';
+    var last = null;
+    blocksInDayOrder(sf).forEach(function (b) {
+      var r = srHolding(sf.id, b.id);
+      if (r && srCountList(r.inventory).length) last = r;
+    });
+    if (!last) return '';
+    return '<p class="small sr-eod">End of day (last shift’s count): ' + esc(srCountSay(last.inventory)) + '. ' + esc(SR_END_OF_DAY_WHY) + '</p>';
   }
   // Compact, for the season's record and the CSV: "Kettle Corn 4, Caramel Corn 2".
   function srCountSay(list) {
@@ -26164,10 +26229,15 @@
   // 2026-10-08 — the count of popcorn left, in the edit form too: the Inventory's named products and
   // any the report already counts, prefilled with the report's count (blank: not counted).
   function srAmendCountFields(r, d) {
-    var ids = [];
+    // The products families are offered for this storefront (buildParentView's rule: those handed
+    // out to it, or every named product when none were), and any the report already counts.
+    var ids = [], sent = [];
     arrOf(state.inventory && state.inventory.products).forEach(function (p) {
-      if (p && typeof p.id === 'string' && SHIFT_COUNT_ID_RE.test(p.id) && String(p.name || '').trim()) ids.push(p.id);
+      if (!(p && typeof p.id === 'string' && SHIFT_COUNT_ID_RE.test(p.id) && String(p.name || '').trim())) return;
+      ids.push(p.id);
+      if (srSentTo(r.sfId, p.id)) sent.push(p.id);
     });
+    if (sent.length) ids = sent;
     srCountList(r.inventory).forEach(function (x) { if (ids.indexOf(x.productId) === -1) ids.push(x.productId); });
     if (!ids.length) return '';
     var had = srCountText(r.inventory), typed = d.left || {};
@@ -26575,7 +26645,7 @@
         fact('Cash from popcorn sales not converted', fmt(r.salesCashCents || 0) +
           (r.salesCashCents > 0 ? ' · ' + (srCashHistorySay(r) || 'still to collect') : '')) +
         fact('Note', r.note ? '“' + r.note + '”' : 'None') +
-        fact('Popcorn left on the table', srCountList(r.inventory).map(function (x) { return srCountLine(r.sfId, x); }).join('; ') || 'Not counted') +
+        fact('Popcorn left on the table', srCountList(r.inventory).map(function (x) { return srCountLine(r, x); }).join('; ') || 'Not counted') +
         fact('Second parent', !r.needsConfirm ? 'Not needed: one family on the shift'
           : r.confirmed ? 'Confirmed by ' + (srNameClean(r.confirmedByName) || 'a parent') + (r.confirmedAt ? ' · ' + srWhen(r.confirmedAt) : '') : 'Not confirmed') +
         (r.acceptedByName || r.acceptedAt ? fact('Accepted', 'By ' + (ledgerStampClean(r.acceptedByName || '') || 'a leader') + (r.acceptedAt ? ' · ' + srWhen(r.acceptedAt) : '') +

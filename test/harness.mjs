@@ -93,6 +93,7 @@ const SR_OFF = "function shiftReportToday() { return '2026-09-28'; }\nfunction p
 const SR_COUNT_FAMILY_FNS = ['SHIFT_REPORT_COUNT_HINT', 'SHIFT_REPORT_LEFT_MAX', 'SHIFT_COUNT_ID_RE', 'srCountTyped', 'srCountParse', 'srCountText',
   'srCountKey', 'parentShiftCountFields'];
 const SR_COUNT_LEADER_FNS = ['srProductName', 'srCountList', 'srSentTo', 'srCountLine', 'SR_COUNT_INFO', 'srCountHtml', 'srCountSay', 'srCountChanges',
+  'fmtClock', 'srHolding', 'srCountStart', 'SR_COUNT_HEAD', 'srEndOfDayLine', 'SR_END_OF_DAY_WHY',
   'srCountText', 'srCountKey', 'srCountParse', 'SHIFT_REPORT_LEFT_MAX', 'SHIFT_COUNT_ID_RE', 'srAmendCountFields', 'srCountTyped'];
 // The reload gate (PACK_FORMAT): what every page context with a pack-record feed or a push needs.
 // By decl (below): PACK_FORMAT is one line, and slice would run on past it.
@@ -19658,7 +19659,8 @@ test('shift report count: the parent view lists each product’s id and name for
   for (const showStandings of [true, false]) {
     const pv = vm.runInContext(`buildParentView(state, { showStandings: ${showStandings} })`, ctx);
     const sf = pv.events.find((e) => e.kind === 'storefront');
-    eq(sf.products, [{ id: 'p1', name: 'Kettle Corn' }, { id: 'p2', name: 'Caramel Corn' }], 'named products, id and name only, standings ' + showStandings);
+    // Review round 1: only what was handed out to this storefront (p1; p2 went to a scout).
+    eq(sf.products, [{ id: 'p1', name: 'Kettle Corn' }], 'the products sent here, id and name only, standings ' + showStandings);
     const text = JSON.stringify(pv);
     ok(!/perCase|unitPrice|98765|2000|"cases"|distributions|containers|Odd/.test(text), 'something else of the Inventory reached the view: ' + text.slice(0, 200));
   }
@@ -19669,7 +19671,13 @@ test('shift report count: the parent view lists each product’s id and name for
   ok(!('products' in vm.runInContext('buildParentView(state, { showStandings: true })', noInv).events.find((e) => e.kind === 'storefront')), 'a record with no inventory');
   // The banner and SETUP.md say so.
   ok(/each product's `id` and `name`\s+\/\/\s+as `products`/.test(SCRIPT) && /a product's id and name\s+\/\/\s+only, above/.test(SCRIPT), 'the banner');
-  ok(/each product's\s+name and id \(`products`; nothing else from the Inventory\)/.test(SETUP) && /only each product's name and id, for the count/.test(SETUP), 'SETUP.md');
+  ok(/each product's\s+name and id \(`products`: the products handed out to that storefront, or every named product\s+when none were recorded going there; nothing else from the Inventory\)/.test(SETUP) &&
+    /only each product's name and id, for the count/.test(SETUP), 'SETUP.md');
+  // Nothing handed out to this storefront (a return is not a hand-out): every named product.
+  const back = pvCtx(SR_STANDINGS_STUBS + `state.inventory = ${JSON.stringify(Object.assign({}, SR_COUNT_INV, { distributions: [
+    { id: 'd9', productId: 'p1', containers: -3, target: { kind: 'storefront', id: 'sf1' } }, { id: 'd8', productId: 'p2', containers: 4, target: { kind: 'storefront', id: 'sf2' } }] }))};`);
+  eq(vm.runInContext('buildParentView(state, { showStandings: true })', back).events.find((e) => e.kind === 'storefront').products.map((p) => p.id), ['p1', 'p2'],
+    'none sent here: the full list');
 });
 
 atest('shift report count: a view built by the real buildParentView carries the products the server checks a count against', async () => {
@@ -19683,8 +19691,10 @@ atest('shift report count: a view built by the real buildParentView carries the 
   eq((await w.call('editor', 'PUT', 'view', null, { body: view })).status, 200, 'the view, with its products, is one the server stores');
   const send = (inventory, blockId) => w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: blockId || 'b2', teCents: 5000, cashCents: 0, attest: true, inventory } });
   eq((await send([{ productId: 'p3', left: 1 }])).body.reason, 'inventory-product', 'a product with no name is not offered, so not taken');
-  const r = await send([{ productId: 'p1', left: 4 }, { productId: 'p2', left: 0 }]);
-  eq([r.status, r.body.report.inventory], [200, [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 0 }]], 'a family counts what the view lists');
+  // Review round 1: the server follows the published list, so a product sent elsewhere is not taken here.
+  eq((await send([{ productId: 'p2', left: 0 }])).body.reason, 'inventory-product', 'a product not handed out to this storefront');
+  const r = await send([{ productId: 'p1', left: 4 }]);
+  eq([r.status, r.body.report.inventory], [200, [{ productId: 'p1', left: 4 }]], 'a family counts what the view lists');
 });
 
 test('shift report count: the family’s form has one small optional whole-number field per product, kept as typed, and sends only what was counted', () => {
@@ -19735,11 +19745,16 @@ test('shift report count: leaders read it beside what was sent to the storefront
   const count = [{ productId: 'p2', left: 2 }, { productId: 'p1', left: 4 }, { productId: 'gone', left: 1 }];
   const L = srLeaderCtx({ role: 'admin', uid: 'uid-kim', name: 'Kim Admin', state: st, reports: [srRep({ inventory: count })] });
   const card = L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
-  ok(/<strong>Popcorn left on the table<\/strong>, counted by the family<\/p><ul class="small"><li>Kettle Corn: sent 10 · left 4 · so about 6 sold<\/li><li>Caramel Corn: left 2<\/li><li>A product no longer on the list: left 1<\/li><\/ul>/.test(card),
-    'per product, in the Inventory’s order, with what was sent there (net of returns): ' + card.slice(card.indexOf('Popcorn left'), card.indexOf('Popcorn left') + 400));
-  ok(/For information only\. Accepting doesn’t change the pack’s inventory\./.test(card), 'said plainly');
+  // Review round 1 (P1): what went there is gross; a return is said apart, never subtracted.
+  ok(new RegExp('<strong>Popcorn left at the end of the shift, counted by the family</strong></p><ul class="small">' +
+    '<li>Kettle Corn: 12 went to this storefront · 4 left · about 8 sold this shift · 2 brought back since</li>' +
+    '<li>Caramel Corn: 2 left \\(the Inventory has none recorded going to this storefront, so sold can’t be worked out\\)</li>' +
+    '<li>A product no longer on the list: 1 left \\(the Inventory has none recorded').test(card),
+    'per product, in the Inventory’s order: ' + card.slice(card.indexOf('Popcorn left'), card.indexOf('Popcorn left') + 500));
+  ok(/For information only\. Accepting doesn’t change the Inventory\. Record what comes back on Popcorn · Inventory after you close out the storefront in Trail’s End\./.test(card), 'said plainly');
   ok(!/Popcorn left/.test(srLeaderCtx({ state: st, reports: [srRep()] }).run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'no count, no section');
-  eq(L.run("srCountLine('sf1', { productId: 'p1', left: 12 })"), 'Kettle Corn: sent 10 · left 12 (more than was sent here)', 'more left than was sent');
+  eq(L.run("srCountLine(srReport('rep-1'), { productId: 'p1', left: 13 })"),
+    'Kettle Corn: 13 left — more than the 12 at the start. Stock may have been added during the day, or a count is off. · 2 brought back since', 'more left than at the start');
   // Accepting writes the block, and nothing of the inventory.
   const before = JSON.stringify(L.get('state.inventory'));
   L.run("acceptShiftReport('rep-1', { collected: true })");
@@ -19760,7 +19775,7 @@ test('shift report count: leaders read it beside what was sent to the storefront
       inventory: [{ productId: 'p1', left: 3 }], reason: 'Recounted' },
     { at: 4, action: 'shift.amend', byName: 'Kim Admin', was: { teCents: 100, cashCents: 0 }, figures: { teCents: 90, cashCents: 0 }, inventoryUnknown: true, reason: 'x' }])} };`);
   const html = L.run('renderShiftReportDetails(ui.overlay)');
-  ok(/<dt>Popcorn left on the table<\/dt><dd>Kettle Corn: sent 10 · left 4 · so about 6 sold; Caramel Corn: left 2; A product no longer on the list: left 1<\/dd>/.test(html), 'the fact');
+  ok(/<dt>Popcorn left on the table<\/dt><dd>Kettle Corn: 12 went to this storefront · 4 left · about 8 sold this shift · 2 brought back since; Caramel Corn: 2 left/.test(html), 'the fact');
   ok(/Popcorn left: Kettle Corn 5<\/p>/.test(html), 'what was sent');
   ok(/The figures stayed the same\.<\/p><p class="small" style="margin:2px 0 0">Popcorn left: Kettle Corn 5 → 4, Caramel Corn not counted → 2<\/p>/.test(html), 'the family’s change to the count');
   ok(/Popcorn left: Kettle Corn 3<\/p>/.test(html), 'a change with nothing before it to compare');
@@ -19770,21 +19785,62 @@ test('shift report count: leaders read it beside what was sent to the storefront
     'Edited by Kim Admin: “Recounted”. Popcorn left: Kettle Corn 4 → 5.', 'the block’s line');
 });
 
+// Review round 1 (P2, P3): a storefront has several shifts and one trunk. Each shift starts from
+// the one before it; the end of the day is the last counted shift.
+test('shift report count: each shift starts from the earlier shift’s count, or says what sold today so far, and the storefront ends on the last count', () => {
+  const blk = (id, start) => ({ id, label: id, start, end: '', assignments: [], salesCents: 0, donationsCents: 0 });
+  const st = { scouts: [{ id: 's1', name: 'Ada Example' }], leaders: [], inventory: { products: [{ id: 'p1', name: 'Kettle Corn' }, { id: 'p2', name: 'Caramel' }],
+    distributions: [{ id: 'd1', productId: 'p1', containers: 12, date: '2026-10-01', target: { kind: 'storefront', id: 'sf1' } },
+      { id: 'd2', productId: 'p2', containers: 6, target: { kind: 'storefront', id: 'sf1' } }] },
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [blk('b3', '14:00'), blk('b1', '10:00'), blk('b2', '12:00')] }] };
+  const rep = (id, blockId, inventory, status) => srRep({ id, blockId, inventory, status: status || 'accepted' });
+  const reports = [rep('r1', 'b1', [{ productId: 'p1', left: 8 }]), rep('r2', 'b2', [{ productId: 'p1', left: 3 }, { productId: 'p2', left: 4 }]),
+    rep('r3', 'b3', [{ productId: 'p1', left: 1 }, { productId: 'p2', left: 1 }], 'submitted')];
+  const L = srLeaderCtx({ role: 'admin', state: st, reports });
+  const line = (rid, pid, left) => L.run(`srCountLine(srReport('${rid}'), { productId: '${pid}', left: ${left} })`);
+  eq(line('r1', 'p1', 8), 'Kettle Corn: 12 went to this storefront · 8 left · about 4 sold this shift', 'the first shift starts with what went there');
+  eq(line('r2', 'p1', 3), 'Kettle Corn: 8 at the start (the 10:00 AM shift’s count) · 3 left · about 5 sold this shift', 'a later shift starts from the one before');
+  eq(line('r2', 'p2', 4), 'Caramel: 6 went to this storefront · 4 left · about 2 sold today so far (the earlier shift didn’t count, so this can’t be split by shift)',
+    'the earlier shift didn’t count it');
+  eq(line('r3', 'p2', 1), 'Caramel: 4 at the start (the 12:00 PM shift’s count) · 1 left · about 3 sold this shift', 'and the next');
+  eq(line('r2', 'p1', 9), 'Kettle Corn: 9 left — more than the 8 at the start. Stock may have been added during the day, or a count is off.', 'left more than the start');
+  // An earlier report sent back or withdrawn is not a start.
+  const R = srLeaderCtx({ role: 'admin', state: st, reports: [rep('r1', 'b1', [{ productId: 'p1', left: 8 }], 'returned'), reports[1]] });
+  ok(/sold today so far \(the earlier shift didn’t count/.test(R.run("srCountLine(srReport('r2'), { productId: 'p1', left: 3 })")), 'a sent-back report is not a start');
+  // Stock handed out again on the storefront day: today so far, said why.
+  const added = JSON.parse(JSON.stringify(st));
+  added.inventory.distributions.push({ id: 'd3', productId: 'p1', containers: 6, date: '2026-10-03', target: { kind: 'storefront', id: 'sf1' } });
+  eq(srLeaderCtx({ role: 'admin', state: added, reports }).run("srCountLine(srReport('r2'), { productId: 'p1', left: 3 })"),
+    'Kettle Corn: 18 went to this storefront · 3 left · about 15 sold today so far (stock was added during the day)', 'stock added during the day');
+  // The end of the day: the last counted shift (r3, waiting), for Trail's End's Close Out Storefront.
+  eq(L.run('srEndOfDayLine(state.storefronts[0])'), '<p class="small sr-eod">End of day (last shift’s count): Kettle Corn 1, Caramel 1. ' +
+    'This is what you enter as Returning in Trail’s End’s Close Out Storefront.</p>', 'the end of the day');
+  eq(srLeaderCtx({ role: 'admin', state: st, reports: [reports[0], reports[1], rep('r3', 'b3', [], 'submitted')] }).run('srEndOfDayLine(state.storefronts[0])'),
+    '<p class="small sr-eod">End of day (last shift’s count): Kettle Corn 3, Caramel 4. This is what you enter as Returning in Trail’s End’s Close Out Storefront.</p>',
+    'a shift that counted nothing is passed over');
+  eq(srLeaderCtx({ role: 'admin', state: st, reports: [] }).run('srEndOfDayLine(state.storefronts[0])'), '', 'nothing counted: nothing said');
+  ok(/var eod = srEndOfDayLine\(sf\);\s*if \(eod\) h \+= '<div class="card">' \+ eod \+ '<\/div>';/.test(slice('renderStorefrontDetail')), 'on the storefront');
+  // The admin's edit form offers what families are offered: what went to this storefront.
+  L.run("ui.srAmend = { rid: 'r2' }");
+  const form = L.run("renderShiftReportAmendForm(srReport('r2'))");
+  ok(/name="left:p1"/.test(form) && /name="left:p2"/.test(form), 'the edit form');
+});
+
 atest('shift report count: an admin corrects the count in the edit form, sending it only when it changed, with the count they were shown', async () => {
   const st = Object.assign(srAmendSt(), { inventory: SR_COUNT_INV });
   const L = srLeaderCtx({ role: 'admin', uid: 'uid-kim', name: 'Kim Admin', state: st,
     reports: [srRep({ status: 'accepted', reviewedByName: 'Sam Leader', inventory: [{ productId: 'p1', left: 4 }] })] });
   L.run("leaderShiftReportAct('sr-amend-open', { dataset: { rid: 'rep-1' } })");
   const form = L.run('renderBlockReportLine(state.storefronts[0].blocks[0])');
-  ok(/<legend>Popcorn left on the table<\/legend>/.test(form) && /name="left:p1"[^>]*value="4"/.test(form) && /name="left:p2"[^>]*value=""/.test(form) && !/left:p3|left:bad/.test(form),
-    'the named products, prefilled with the report’s count');
+  ok(/<legend>Popcorn left on the table<\/legend>/.test(form) && /name="left:p1"[^>]*value="4"/.test(form) && !/left:p2|left:p3|left:bad/.test(form),
+    'the products sent to this storefront (p2 went to a scout), prefilled with the report’s count');
   L.run("amendShiftReport('rep-1', { te: '123.45', cash: '25', left: { p1: '4', p2: '' }, reason: 'x' })");
   eq([L.get('patches.length'), L.get('toasts').pop()], [0, 'Those are the figures the report already has.'], 'the same count is no change');
   L.run("amendShiftReport('rep-1', { te: '123.45', cash: '25', left: { p1: 'lots' }, reason: 'x' })");
   eq(L.get('toasts').pop(), 'Count whole containers, like 4, up to 10,000. Leave it blank if it wasn’t counted.', 'a bad count');
-  L.run("amendShiftReport('rep-1', { te: '123.45', cash: '25', left: { p1: '3', p2: '1' }, reason: 'Recounted the trunk' })");
+  L.run("amendShiftReport('rep-1', { te: '123.45', cash: '25', left: { p1: '3' }, reason: 'Recounted the trunk' })");
   eq(L.get('patches')[0].body, { action: 'amend', teCents: 12345, cashCents: 2500, salesCashCents: 0, wasTeCents: 12345, wasCashCents: 2500, wasSalesCashCents: 0,
-    reason: 'Recounted the trunk', inventory: [{ productId: 'p1', left: 3 }, { productId: 'p2', left: 1 }], wasInventory: [{ productId: 'p1', left: 4 }] }, 'only the count changed');
+    reason: 'Recounted the trunk', inventory: [{ productId: 'p1', left: 3 }], wasInventory: [{ productId: 'p1', left: 4 }] }, 'only the count changed');
   await L.answer(0, { code: 'invalid-argument', reason: 'inventory-product' });
   ok(L.get('toasts').indexOf('One of those products isn’t on the list families see for this storefront yet. Wait a moment for the pack to save, then try again.') !== -1, 'refused, in words');
   L.run("amendShiftReport('rep-1', { te: '100', cash: '25', left: { p1: '4' }, reason: 'Figures only' })");

@@ -3,15 +3,17 @@
 -- Keith (2026-10-08): "It may also be a good idea for the shift report to include a simple-to-fill
 -- inventory report." At the end of a storefront shift the family counts the CONTAINERS still on
 -- the table, per product. It is OPTIONAL: a product left blank was not counted, and a report with
--- no count at all is as it always was. The leaders see it beside what the pack's Inventory sent to
--- that storefront ("sent 12 · left 4 · so about 8 sold"), purely for information: accepting a
--- report NEVER changes the pack's inventory (Keith's choice). Nobody but the leaders and the family
+-- no count at all is as it always was. The leaders see it beside the stock at the start of that
+-- shift ("Kettle Corn: 12 went to this storefront · 8 left · about 4 sold this shift"; a later
+-- shift starts from the earlier shift's count), purely for information: accepting a report NEVER
+-- changes the pack's inventory (Keith's choice). Nobody but the leaders and the family
 -- who sent it ever reads it, as with the figures.
 --
 -- inventory_json is the count as the server stores it: '' (nothing counted) or a JSON array of
 -- { "productId": "<id>", "left": <0..10000> }, one per product counted, sorted by productId, no
 -- product twice. The products are the ones the stored parent view publishes for that storefront
--- (buildParentView: { id, name } only, nothing else of the Inventory). WHO MAY DO WHAT, and the
+-- (buildParentView: { id, name } only, nothing else of the Inventory; those handed out to that
+-- storefront, or every named product when none were). WHO MAY DO WHAT, and the
 -- shape, are decided in functions/_lib/rules.js (shiftInventoryProblem: at most 40 products, whole
 -- numbers 0 to 10,000) and the shift-report endpoints: the sender sets it when sending and may
 -- change it while it waits ('edit'), an ADMIN may correct it on an accepted report ('amend'), and
