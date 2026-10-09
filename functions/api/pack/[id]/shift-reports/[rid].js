@@ -14,6 +14,8 @@
 // report on the shift) only on the sent-back kind.
 //   { action: 'return', reviewNote }                              admin or editor; waiting or accepted
 //   { action: 'salescash', outcome, salesCashCents }              admin or editor; an accepted report holding cash from sales
+//   { action: 'amend', teCents, cashCents, salesCashCents?, wasTeCents, wasCashCents, wasSalesCashCents?, reason }
+//                                                                 an ADMIN; an accepted report (Keith, 2026-10-07)
 // Answers { report } as GET would show it to the caller.
 //
 // Not a Part C rule (see index.js beside this file, and SETUP.md Part C, "Shift reports").
@@ -53,6 +55,19 @@
 //     ('salescash', followups round 3). Undoing one is open to any admin or editor.
 //   - Sending back needs a reason, and works on a waiting report or an accepted one (a leader
 //     reopening a report that went in wrong). A family sends a corrected one as a new report.
+//   - Correcting an accepted report (Keith, 2026-10-07; migrations/0005_shift_report_amendments.sql):
+//     a family rained out of a storefront sold from a wagon and reported it as the storefront's
+//     totals, so once Trail's End's figures came in the sales counted twice. An ADMIN (not an
+//     editor: canAmendShiftReport) changes the figures of an ACCEPTED report in place, with a
+//     written reason the family reads, and it stays accepted. The admin names the figures they
+//     were shown (was*), and the edit lands only if the report still holds them. What it held
+//     before is kept in shift_report_amendments, one row per edit, written in the same batch and
+//     only if the edit landed, and audited shift.amend. The accept's own record (accepted_*) is
+//     never touched. Never the sender, nor the parent who confirmed it, nor anyone in the
+//     sender's family (the accept's own rule, the same record and rev in the write): an admin
+//     does not correct their own family's credit. Cash from sales a leader has already recorded
+//     as collected or converted keeps its amount (409 sales-cash-recorded: undo that first), and
+//     is never more than the Trail's End amount, as when it was sent.
 // Every change is compared in the write itself: the UPDATE names the state it was decided
 // against (the row's stamp, its status, the figures) and the caller's role at that moment, and
 // a change that finds anything moved writes nothing and answers 409 report-moved — so a leader
@@ -60,11 +75,11 @@
 // win. The audit row is in the same batch and lands only with its own change.
 
 import { route, json, readObject, refuse, forbidden, notFound, badRequest, reportMoved, samePerson, notShiftParent, needsConfirm,
-  notCollected, sameFamilyRefused, packMoved } from '../../../../_lib/http.js';
+  notCollected, sameFamilyRefused, packMoved, salesCashRecorded } from '../../../../_lib/http.js';
 import { withMember, auditIf } from '../../../../_lib/pack.js';
-import { canSubmitShiftReport, canReviewShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
+import { canSubmitShiftReport, canReviewShiftReport, canAmendShiftReport, canReadAllShiftReports, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
   SHIFT_REPORT_NOTE_MAX, shiftConfirmers, sameFamily, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS } from '../../../../_lib/rules.js';
-import { reportOut, readReport, readPackRecord, readPackForFamily, STILL_MEMBER, SUBMIT_ROLES } from './index.js';
+import { reportOut, readReport, readReportAmendments, readPackRecord, readPackForFamily, STILL_MEMBER, SUBMIT_ROLES } from './index.js';
 
 // Is this leader in the sender's family, by the record read for it? An unreadable record says yes.
 const familyOf = (famRec, uid, senderUid) => !!famRec && (famRec.unreadable === true || sameFamily(famRec.pack, uid, senderUid));
@@ -77,8 +92,10 @@ const ACTION_KEYS = {
   confirm: ['attest', 'teCents', 'cashCents', 'salesCashCents', 'updatedAt'],
   accept: ['teCents', 'cashCents', 'salesCashCents', 'reviewNote', 'override', 'collected'],
   return: ['reviewNote'],
-  salescash: ['outcome', 'salesCashCents']
+  salescash: ['outcome', 'salesCashCents'],
+  amend: ['teCents', 'cashCents', 'salesCashCents', 'wasTeCents', 'wasCashCents', 'wasSalesCashCents', 'reason']
 };
+const AMEND_ROLES = ['admin'];
 const RID_RE = /^[A-Za-z0-9-]{1,64}$/;
 
 function reportId(params) {
@@ -86,10 +103,10 @@ function reportId(params) {
   if (typeof r !== 'string' || !RID_RE.test(r)) refuse(notFound());
   return r;
 }
-function reviewNote(v, required) {
-  if (v !== undefined && v !== null && typeof v !== 'string') refuse(badRequest('review-note'));
+function reviewNote(v, required, why) {
+  if (v !== undefined && v !== null && typeof v !== 'string') refuse(badRequest(why || 'review-note'));
   const n = cleanReportNote(v);
-  if (n.length > SHIFT_REPORT_NOTE_MAX || (required && !n)) refuse(badRequest('review-note'));
+  if (n.length > SHIFT_REPORT_NOTE_MAX || (required && !n)) refuse(badRequest(why || 'review-note'));
   return n;
 }
 
@@ -103,6 +120,7 @@ async function patch({ request, db, packId, role, user, member, params }) {
   for (const k of Object.keys(b)) if (k !== 'action' && ACTION_KEYS[action].indexOf(k) === -1) refuse(badRequest('unknown-field'));
   const reviewing = action === 'accept' || action === 'return' || action === 'salescash';
   if (reviewing && !canReviewShiftReport(role)) return forbidden();
+  if (action === 'amend' && !canAmendShiftReport(role)) return forbidden();
   const row = await readReport(db, packId, rid);
   // The sender's own actions: anyone else gets the one fixed 403, whether or not it exists.
   if ((action === 'edit' || action === 'withdraw') && (!row || row.submitted_by_uid !== user.uid)) return forbidden();
@@ -112,7 +130,8 @@ async function patch({ request, db, packId, role, user, member, params }) {
   const now = Date.now(), stamp = crypto.randomUUID();
   const name = member.name || '';
   let update, roles, detail, audit;
-  let famRec = null;   // the pack record a family decision was made against (accept, salescash): its rev is in the write
+  let famRec = null;   // the pack record a family decision was made against (accept, salescash, amend): its rev is in the write
+  let amendRow = null;  // amend: the correction's own row, written only with it
   if (action === 'edit' || action === 'withdraw') {
     if (row.status !== 'submitted') return reportMoved(row.status);
     roles = SUBMIT_ROLES;
@@ -245,6 +264,40 @@ async function patch({ request, db, packId, role, user, member, params }) {
     audit = 'shift.salescash.' + (undo ? 'undo' : b.outcome);
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, salesCashCents: row.sales_cash_cents, byName: name };
     if (undo) detail.was = { outcome: row.sales_cash_outcome, byName: row.sales_cash_by_name || '', at: row.sales_cash_at };
+  } else if (action === 'amend') {
+    if (row.status !== 'accepted') return reportMoved(row.status);
+    // The new figures, as a report's (whole cents in range; the cash from sales no more than the
+    // Trail's End amount), and the figures the admin was shown.
+    const why = shiftReportFiguresProblem(Object.assign({}, b, { attest: true, note: undefined }));
+    if (why) refuse(badRequest(why));
+    const salesCash = reportSalesCash(b);
+    const wasSales = b.wasSalesCashCents !== undefined ? b.wasSalesCashCents : 0;
+    for (const v of [b.wasTeCents, b.wasCashCents, wasSales]) if (!Number.isInteger(v)) refuse(badRequest('figures'));
+    const note = reviewNote(b.reason, true, 'amend-reason');
+    if (b.wasTeCents !== row.te_cents || b.wasCashCents !== row.cash_cents || wasSales !== row.sales_cash_cents) return reportMoved(row.status);
+    if (b.teCents === row.te_cents && b.cashCents === row.cash_cents && salesCash === row.sales_cash_cents) refuse(badRequest('no-change'));
+    if (row.sales_cash_outcome && salesCash !== row.sales_cash_cents) return salesCashRecorded();
+    // A second adult's word on the money, as the accept is: never the sender, the confirmer, or
+    // the sender's family.
+    if (row.submitted_by_uid === user.uid || (row.confirmed_by_uid && row.confirmed_by_uid === user.uid)) return samePerson();
+    famRec = await readPackForFamily(db, packId);
+    if (familyOf(famRec, user.uid, row.submitted_by_uid)) return sameFamilyRefused();
+    roles = AMEND_ROLES;
+    update = db.prepare('UPDATE shift_reports SET te_cents = ?, cash_cents = ?, sales_cash_cents = ?, updated_at = ?, stamp = ? ' +
+      "WHERE pack_id = ? AND id = ? AND stamp = ? AND status = 'accepted' AND te_cents = ? AND cash_cents = ? AND sales_cash_cents = ? " +
+      'AND (sales_cash_outcome IS NULL OR sales_cash_cents = ?) AND submitted_by_uid != ? AND (confirmed_by_uid IS NULL OR confirmed_by_uid != ?) AND ' +
+      (famRec ? '(SELECT rev FROM pack_state WHERE pack_id = ?) = ? AND ' : '') + STILL_MEMBER(roles))
+      .bind(b.teCents, b.cashCents, salesCash, now, stamp, packId, rid, row.stamp, row.te_cents, row.cash_cents, row.sales_cash_cents,
+        salesCash, user.uid, user.uid, ...(famRec ? [packId, famRec.rev] : []), packId, user.uid, ...roles);
+    amendRow = db.prepare('INSERT INTO shift_report_amendments (pack_id, report_id, at, by_uid, by_name, reason, was_te_cents, was_cash_cents, ' +
+      'was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ' +
+      'WHERE EXISTS (SELECT 1 FROM shift_reports WHERE pack_id = ? AND id = ? AND stamp = ?)')
+      .bind(packId, rid, now, user.uid, name, note, row.te_cents, row.cash_cents, row.sales_cash_cents, b.teCents, b.cashCents, salesCash,
+        packId, rid, stamp);
+    audit = 'shift.amend';
+    detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, byName: name, reason: note,
+      was: { teCents: row.te_cents, cashCents: row.cash_cents, salesCashCents: row.sales_cash_cents },
+      now: { teCents: b.teCents, cashCents: b.cashCents, salesCashCents: salesCash } };
   } else {
     if (row.status !== 'submitted' && row.status !== 'accepted') return reportMoved(row.status);
     roles = REVIEW_ROLES;
@@ -256,7 +309,7 @@ async function patch({ request, db, packId, role, user, member, params }) {
     detail = { report: rid, sfId: row.sf_id, blockId: row.block_id, from: row.status, reason: cleanReportNote(b.reviewNote), reviewerName: name };
   }
 
-  const res = await db.batch([update,
+  const res = await db.batch([update, ...(amendRow ? [amendRow] : []),
     auditIf(db, packId, user.uid, audit, detail, now, 'EXISTS (SELECT 1 FROM shift_reports WHERE pack_id = ? AND id = ? AND stamp = ?)',
       [packId, rid, stamp])]);
   if (!(res[0].meta && res[0].meta.changes === 1)) {
@@ -273,7 +326,8 @@ async function patch({ request, db, packId, role, user, member, params }) {
     }
     return reportMoved(now2 ? now2.status : null);
   }
-  return json(200, { report: reportOut(await readReport(db, packId, rid), user.uid, canReadAllShiftReports(role)) });
+  return json(200, { report: reportOut(await readReport(db, packId, rid), user.uid, canReadAllShiftReports(role),
+    await readReportAmendments(db, packId, rid)) });
 }
 
 export const onRequest = route({ PATCH: withMember(patch) });

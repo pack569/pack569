@@ -16017,6 +16017,112 @@ atest('S-5: a second parent confirms the cash still in hand too, and the table r
   ok(/ALTER TABLE shift_reports ADD COLUMN sales_cash_cents INTEGER NOT NULL DEFAULT 0/.test(MIGRATION), 'a new column, defaulting to 0, for every report already sent');
 });
 
+/* ---- An admin corrects an accepted report, with a reason (Keith, 2026-10-07) ----
+   migrations/0005_shift_report_amendments.sql; [rid].js action 'amend'. A family rained out of a
+   storefront sold from a wagon and reported it as the storefront's totals; the admin lowers the
+   Trail's End figure without a round trip, and the family reads why. */
+atest('shift report edits: an admin corrects an accepted report with a reason — admins only, the figures they were shown, kept and audited', async () => {
+  const w = await srWorld();
+  // admin2 is in the parent's family (Ada's parents); the owner is not.
+  w.state(3, PACK_STATE({ scouts: [{ id: 's1', name: 'Ada', parentUids: ['uid-parent', 'uid-admin2'] }] }));
+  const rid = (await w.report('parent', { blockId: 'b1' })).body.report.id;
+  const amend = (who, over, id) => w.act(who, id || rid, Object.assign({ action: 'amend', teCents: 0, cashCents: 2500, salesCashCents: 0,
+    wasTeCents: 12345, wasCashCents: 2500, wasSalesCashCents: 0, reason: 'Rained out; sold from a wagon, already in Trail’s End as wagon sales' }, over || {}));
+  eq((await amend('owner')).body.error, 'report-moved', 'a report still waiting');
+  eq((await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).status, 200, 'accepted');
+  const acceptedBefore = w.one('SELECT accepted_by_uid, accepted_at, accept_note, reviewed_by_uid, reviewed_at FROM shift_reports WHERE id = ?', rid);
+  // Admins only: an editor, and everyone below, get the fixed 403.
+  for (const who of ['editor', 'viewer', 'parent', 'newbie', 'pending', 'stranger']) denied(await amend(who), who + ' editing an accepted report');
+  // What the body must say.
+  eq((await amend('owner', { reason: '   ' })).body.reason, 'amend-reason', 'no reason');
+  eq((await amend('owner', { reason: 'x'.repeat(301) })).body.reason, 'amend-reason', 'a reason over 300 characters');
+  eq((await amend('owner', { reason: undefined })).body.reason, 'amend-reason', 'the reason left out');
+  eq((await amend('owner', { teCents: -1 })).body.reason, 'te-cents', 'a negative figure');
+  eq((await amend('owner', { cashCents: 1.5 })).body.reason, 'cash-cents', 'part of a cent');
+  eq((await amend('owner', { salesCashCents: 100 })).body.reason, 'sales-cash-cents', 'cash from sales above the Trail’s End amount');
+  eq((await amend('owner', { wasTeCents: '12345' })).body.reason, 'figures', 'the figures shown, as text');
+  eq((await amend('owner', { teCents: 12345 })).body.reason, 'no-change', 'nothing changed');
+  eq((await amend('owner', { note: 'x' })).body.reason, 'unknown-field', 'an unknown field');
+  eq((await amend('owner', { wasTeCents: 12000 })).body.error, 'report-moved', 'figures the report no longer holds');
+  // Never someone in the sender's family (the accept's own rule).
+  eq((await amend('admin2')).body.error, 'same-family', 'an admin in the sender’s family');
+  eq(w.sql('SELECT count(*) AS n FROM shift_report_amendments')[0].n, 0, 'a refused edit was kept');
+  eq(w.sql("SELECT count(*) AS n FROM audit WHERE action = 'shift.amend'")[0].n, 0, 'a refused edit was audited');
+  eq(w.one('SELECT te_cents FROM shift_reports WHERE id = ?', rid).te_cents, 12345, 'a refused edit changed the report');
+  // The edit: the report stays accepted, holds the new figures, and the accept's record is untouched.
+  const ok1 = await amend('owner');
+  eq([ok1.status, ok1.body.report.status, ok1.body.report.teCents, ok1.body.report.cashCents], [200, 'accepted', 0, 2500], 'the edit');
+  const a1 = ok1.body.report.amendments;
+  eq(a1.length, 1, 'one amendment');
+  eq([a1[0].byName, a1[0].byUid, a1[0].reason, a1[0].was, a1[0].now, typeof a1[0].at],
+    ['Test owner', 'uid-owner', 'Rained out; sold from a wagon, already in Trail’s End as wagon sales', { teCents: 12345, cashCents: 2500, salesCashCents: 0 },
+      { teCents: 0, cashCents: 2500, salesCashCents: 0 }, 'number'], 'what it keeps');
+  eq(w.one('SELECT accepted_by_uid, accepted_at, accept_note, reviewed_by_uid, reviewed_at FROM shift_reports WHERE id = ?', rid), acceptedBefore,
+    'the edit changed the accept’s record');
+  const au = w.sql("SELECT uid, detail FROM audit WHERE action = 'shift.amend'");
+  eq([au.length, au[0].uid, JSON.parse(au[0].detail)], [1, 'uid-owner', { report: rid, sfId: 'sfPast', blockId: 'b1', byName: 'Test owner',
+    reason: 'Rained out; sold from a wagon, already in Trail’s End as wagon sales', was: { teCents: 12345, cashCents: 2500, salesCashCents: 0 },
+    now: { teCents: 0, cashCents: 2500, salesCashCents: 0 } }], 'the audit');
+  // A second edit is kept beside the first, oldest first.
+  eq((await amend('owner', { wasTeCents: 0, teCents: 0, cashCents: 0, reason: 'The donations were wagon cash too' })).status, 200, 'a second edit');
+  const lead = (await w.reports('viewer')).body.reports.find((r) => r.id === rid);
+  eq(lead.amendments.map((a) => [a.reason, a.was.cashCents, a.now.cashCents, a.byUid]),
+    [['Rained out; sold from a wagon, already in Trail’s End as wagon sales', 2500, 2500, 'uid-owner'], ['The donations were wagon cash too', 2500, 0, 'uid-owner']],
+    'a leader reads both');
+  // The family reads its own report's edits: the reason and the admin's first name, never an account id.
+  const fam = (await w.reports('parent')).body.reports.find((r) => r.id === rid);
+  eq([fam.teCents, fam.cashCents, fam.amendments.length, fam.amendments[1].byName, fam.amendments[1].reason], [0, 0, 2, 'Test', 'The donations were wagon cash too'],
+    'the family’s own report');
+  ok(!JSON.stringify(fam).includes('uid-owner') && !('byUid' in fam.amendments[0]), 'an account id reached the family');
+  // Another account's parent-shaped answer has no amounts of it at all.
+  const asParent = await w.call('newbie', 'GET', 'shiftReports', null, { query: '?as=parent' });
+  ok(!JSON.stringify(asParent.body).includes('wagon'), 'another family read the reason');
+  // A report an admin sent is never theirs to correct.
+  const own = (await w.report('owner', { blockId: 'b2' })).body.report.id;
+  await w.act('editor', own, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  eq((await amend('owner', {}, own)).body.error, 'same-person', 'an admin correcting their own report');
+  // A sent-back report is not corrected in place.
+  await w.act('editor', own, { action: 'return', reviewNote: 'Recount' });
+  eq((await amend('admin2', {}, own)).body.error, 'report-moved', 'a report sent back');
+});
+
+atest('shift report edits: cash from sales already recorded keeps its amount, two admins at once land once, and the table refuses what the rules refuse', async () => {
+  const w = await srWorld();
+  const rid = (await w.report('parent', { blockId: 'b1', salesCashCents: 700 })).body.report.id;
+  await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, salesCashCents: 700, collected: true });
+  const amend = (who, over) => w.act(who, rid, Object.assign({ action: 'amend', teCents: 12345, cashCents: 2500, salesCashCents: 700,
+    wasTeCents: 12345, wasCashCents: 2500, wasSalesCashCents: 700, reason: 'Fixing it' }, over || {}));
+  eq((await amend('owner', { wasSalesCashCents: undefined, teCents: 9000 })).body.error, 'report-moved', 'the cash from sales left out of what was shown (0)');
+  await w.act('editor', rid, { action: 'salescash', outcome: 'collected', salesCashCents: 700 });
+  eq((await amend('owner', { salesCashCents: 0 })).body.error, 'sales-cash-recorded', 'changing cash a leader has marked collected');
+  eq((await amend('owner', { teCents: 500 })).body.reason, 'sales-cash-cents', 'a Trail’s End amount below the cash from sales in it');
+  const r = await amend('owner', { teCents: 9000 });
+  eq([r.status, r.body.report.teCents, r.body.report.salesCashCents, r.body.report.salesCashOutcome], [200, 9000, 700, 'collected'], 'the Trail’s End amount, the cash kept');
+  // Two admins at once: one lands, the other is told it moved; one amendment, one audit row each.
+  holdBatches(w, 2);
+  const [a, b] = await Promise.all([amend('owner', { wasTeCents: 9000, teCents: 8000 }), amend('admin2', { wasTeCents: 9000, teCents: 7000 })]);
+  eq([[a.status, b.status].sort(), w.sql('SELECT count(*) AS n FROM shift_report_amendments')[0].n, w.sql("SELECT count(*) AS n FROM audit WHERE action = 'shift.amend'")[0].n],
+    [[200, 409], 2, 2], 'two at once');
+  // An admin made a viewer a moment ago writes nothing.
+  w.db.raw.prepare("UPDATE members SET role = 'viewer' WHERE uid = 'uid-admin2'").run();
+  denied(await amend('admin2', { wasTeCents: w.one('SELECT te_cents FROM shift_reports WHERE id = ?', rid).te_cents, teCents: 1000 }), 'an admin no longer');
+  // The table's own CHECKs.
+  const refused = (over) => {
+    const c = Object.assign({ pack_id: API_PACK, report_id: rid, at: 1, by_uid: 'uid-owner', by_name: 'x', reason: 'why', was_te_cents: 1, was_cash_cents: 0,
+      was_sales_cash_cents: 0, te_cents: 0, cash_cents: 0, sales_cash_cents: 0 }, over);
+    const k = Object.keys(c);
+    try { w.db.raw.prepare('INSERT INTO shift_report_amendments (' + k.join(', ') + ') VALUES (' + k.map(() => '?').join(', ') + ')').run(...k.map((x) => c[x])); return false; }
+    catch (e) { return true; }
+  };
+  ok(refused({ reason: '  ' }) && refused({ reason: 'x'.repeat(301) }), 'a reason missing or too long');
+  ok(refused({ te_cents: 1 }), 'an edit that changes nothing');
+  ok(refused({ te_cents: -1 }) && refused({ cash_cents: 1000001 }) && refused({ was_sales_cash_cents: 1.5 }), 'a figure the rules refuse');
+  ok(refused({ by_uid: '' }), 'nobody making it');
+  ok(!refused({}), 'a good row');
+  eq(MIGRATION_FILES.indexOf('0005_shift_report_amendments.sql'), 4, 'the migration, after the first four');
+  ok(/canAmendShiftReport = \(role\) => role === 'admin';/.test(readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8')), 'admins only, in the rules');
+});
+
 atest('api shift reports: SETUP.md Part C describes the rules the server holds', async () => {
   await apiSetup();
   const part = SETUP.slice(SETUP.indexOf('## Part C'), SETUP.indexOf('## Part D'));
@@ -16150,6 +16256,8 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'srParentStore', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
   'srScheduleRefresh', 'parentDoc', 'parentPreviewDoc', 'shiftReportOpenFor', 'shiftReportToday', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_DAYS', 'isoPlusDays',
   'srFormOpen', 'srMirror', 'srReasonDraft', 'srNameClean',
+  // Keith (2026-10-07) — an admin corrects an accepted report.
+  'srCanAmend', 'srAmendNotMine', 'srAmends', 'srAcceptedFigures', 'srAmendSay', 'srAmendToBlock', 'srAmendMirror', 'amendShiftReport', 'ledgerStampClean', 'srWhen', 'fmt',
   // Keith (2026-10-02) — Home's family card reads the parent-shaped answer too.
   'srHomeFamilyOn', 'homeShiftsNear',
   'ledgerActor', 'ledgerActorName',
@@ -17563,7 +17671,9 @@ test('shift totals: every refusal the server can give has words a family can act
   ['open', 'accepted', 'report-moved'].forEach((r) => reasons.add(r));
   // Asked of a well-formed page, these only follow a bug, a stale page, or a leader's action.
   // 'outcome' and 'no-sales-cash' answer only a leader's 'salescash' (LEADER_SR_SAY), never a family.
-  const generic = ['sf-id', 'block-id', 'unknown-field', 'action', 'review-note', 'same-person', 'override', 'figures', 'collected', 'outcome', 'no-sales-cash', 'as'];
+  // 'amend-reason' and 'no-change' answer only an admin's 'amend' (Keith, 2026-10-07; LEADER_SR_SAY).
+  const generic = ['sf-id', 'block-id', 'unknown-field', 'action', 'review-note', 'same-person', 'override', 'figures', 'collected', 'outcome', 'no-sales-cash', 'as',
+    'amend-reason', 'no-change'];
   ok(reasons.size >= 14, 'the reasons found: ' + [...reasons]);
   for (const r of reasons) {
     const m = say({ code: 'invalid-argument', reason: r });
@@ -17729,7 +17839,9 @@ function srLeaderCtx(o) {
        'srIConfirmed', 'srFamiliesNow', 'srNeedsCheck', 'srStuck', 'srTakeOver', 'SR_STUCK_MS', 'SR_CHECK_TE', 'SR_IMPORT_FIRST', 'familyKeyOf',
        'blockCashCheck', 'signoffFromOf', 'SIGNOFF_FROM_DEFAULT', 'signoffHides', 'isoPlusDays', 'SHIFT_REPORT_DAYS', 'blocksInDayOrder', 'srSenderLinked', 'srUndoServerFirst', 'srAcceptedAsPending', 'SR_UNDO_NOTE',
        'srParentStore', 'srHomeFamilyOn', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
-       'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay'].map(decl).join('\n')}
+       'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
+       'srCanAmend', 'srAmendNotMine', 'srAmends', 'srAcceptedFigures', 'srAmendSay', 'srAmendToBlock', 'srAmendMirror', 'renderShiftReportAmendForm', 'amendShiftReport',
+       'shiftReportCents', 'SHIFT_REPORT_MAX_CENTS'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }
     function shiftReportToday() { return todayISO(); }   // the pack's day, here the test's`, ctx);
   const run = (js) => vm.runInContext(js, ctx);
@@ -17915,6 +18027,120 @@ atest('shift reports S-3: sending back an accepted report keeps its figures, dro
   // Typing a verifier, or a figure, clears it: someone has looked.
   L.run('srHandEdited(state.storefronts[0].blocks[0])');
   eq(L.block('b1').reportReturned, undefined, 'a hand edit leaves the warning');
+});
+
+// Keith (2026-10-07) — an admin corrects an accepted report, with a reason, without sending it back.
+const srAmendSt = (over) => ({ scouts: [{ id: 's1', name: 'Ada' }, { id: 's2', name: 'Bo' }], leaders: [], storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [
+  Object.assign({ id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }, { scoutId: 's2', weight: 1 }],
+    salesCents: 12345, donationsCents: 2500, cashCountedBy: 'Nora Newfamily', cashVerifiedBy: 'Sam Leader', reportId: 'rep-1', reportFrom: 'Nora Newfamily',
+    reportApprovedBy: 'Sam Leader', reportCollected: true }, over || {})] }] });
+const srAmended = (over) => srRep(Object.assign({ status: 'accepted', reviewedByName: 'Sam Leader', acceptedByName: 'Sam Leader', teCents: 0,
+  amendments: [{ at: Date.parse('2026-10-05T16:00:00Z'), byName: 'Kim Admin', byUid: 'uid-kim', reason: 'Rained out; sold from a wagon',
+    was: { teCents: 12345, cashCents: 2500, salesCashCents: 0 }, now: { teCents: 0, cashCents: 2500, salesCashCents: 0 } }] }, over || {}));
+
+atest('shift report edits: an admin edits an accepted report’s totals from the block, with a reason — the server first, then the block, still linked', async () => {
+  const opts = { role: 'admin', uid: 'uid-kim', name: 'Kim Admin', state: srAmendSt(), reports: [srRep({ status: 'accepted', reviewedByName: 'Sam Leader' })] };
+  const L = srLeaderCtx(opts);
+  const line = () => L.run('renderBlockReportLine(state.storefronts[0].blocks[0])');
+  ok(/data-act="sr-amend-open" data-rid="rep-1" aria-label="Edit the accepted totals">Edit<\/button>/.test(line()) && /data-act="sr-return-open" data-rid="rep-1">Send back</.test(line()),
+    'an admin’s Edit beside Send back');
+  // A job is never the gate: the member role is. An editor sends back; a viewer reads.
+  ok(!/sr-amend-open/.test(srLeaderCtx(Object.assign({}, opts, { role: 'editor' })).run('renderBlockReportLine(state.storefronts[0].blocks[0])')), 'an editor’s Edit');
+  ok(!/<button/.test(srLeaderCtx(Object.assign({}, opts, { role: 'viewer' })).run('renderBlockReportLine(state.storefronts[0].blocks[0])')), 'a viewer’s buttons');
+  const S = srLeaderCtx(Object.assign({}, opts, { reports: [srRep({ status: 'accepted', submittedByUid: 'uid-kim' })] }));
+  const own = S.run('renderBlockReportLine(state.storefronts[0].blocks[0])');
+  ok(!/sr-amend-open/.test(own) && /You sent this report, so another admin corrects it\./.test(own), 'the sender, an admin');
+  // The form, prefilled; no Edit while it is open.
+  L.run("leaderShiftReportAct('sr-amend-open', { dataset: { rid: 'rep-1' } })");
+  const form = line();
+  ok(/<form data-form="shift-report-amend" class="sr-return" data-rid="rep-1">/.test(form) && /name="te" class="money-in" inputmode="decimal"[^>]*value="123\.45"/.test(form) &&
+    /name="cash" class="money-in"[^>]*value="25\.00"/.test(form) && !/name="salesCash"/.test(form) && !/sr-amend-open/.test(form), 'the form');
+  ok(/Why are you changing them\? The family sees this\.<textarea name="reason" rows="2" maxlength="300" required>/.test(form), 'the reason, required, the family sees it');
+  // What the form refuses before anything is sent.
+  for (const [d, said] of [[{ te: '0', cash: '25', reason: '  ' }, 'Say why you are changing the figures. The family sees this.'],
+    [{ te: 'lots', cash: '25', reason: 'x' }, 'Type each figure as dollars and cents, like 120 or 120.50, up to $10,000.'],
+    [{ te: '123.45', cash: '25.00', reason: 'x' }, 'Those are the figures the report already has.']]) {
+    L.run(`toasts.length = 0; amendShiftReport('rep-1', ${JSON.stringify(d)})`);
+    eq([L.get('patches.length'), L.get('toasts')], [0, [said]], said);
+  }
+  // The save: server first, naming the figures shown. $0 is a figure.
+  L.run("amendShiftReport('rep-1', { te: '0', cash: '25', salesCash: null, reason: ' Rained out;  sold from a wagon ' })");
+  eq(L.get('patches'), [{ rid: 'rep-1', body: { action: 'amend', teCents: 0, cashCents: 2500, salesCashCents: 0, wasTeCents: 12345, wasCashCents: 2500,
+    wasSalesCashCents: 0, reason: 'Rained out; sold from a wagon' } }], 'the PATCH');
+  eq([L.block('b1').salesCents, L.get('commits')], [12345, 0], 'the block changed before the server agreed');
+  L.run(`answers[0].res(${JSON.stringify({ report: srAmended() })})`);
+  for (let k = 0; k < 5; k++) await new Promise((r) => setImmediate(r));
+  const b = L.block('b1');
+  eq([b.salesCents, b.donationsCents, b.reportId, b.cashVerifiedBy, L.get('commits'), L.get('ui.srAmend')], [0, 2500, 'rep-1', 'Sam Leader', 1, null],
+    'the block takes the corrected figures and stays linked, verified as it was');
+  eq(L.get("blockShares(state.storefronts[0].blocks[0]).map(function (s) { return s.sales; })"), [0, 0], 'the scouts’ credit follows');
+  ok(L.get('toasts').some((t) => /^Saved\. The block now has \$0\.00 Trail’s End and \$25\.00 cash donations, and the family sees why\.$/.test(t)), 'the toast');
+  ok(/Edited by Kim Admin, D2026-10-05, [^“]+: “Rained out; sold from a wagon” \(was \$123\.45 Trail’s End\)\./.test(line()), 'the block says what was changed, why and by whom');
+  eq(L.get('loads'), 1, 'the reports read again');
+  // Refused: the block stays as it is, and the admin is told why in words.
+  const R = srLeaderCtx(opts);
+  R.run("amendShiftReport('rep-1', { te: '0', cash: '25', reason: 'x' })");
+  await R.answer(0, { code: 'failed-precondition', reason: 'report-moved' });
+  eq([R.block('b1').salesCents, R.get('commits')], [12345, 0], 'refused: the block');
+  ok(R.get('toasts').indexOf('This report changed, or was sent back, before your edit reached the server. Look at it again.') !== -1, 'refused: said');
+  // Never under an accept still being saved.
+  const P = srLeaderCtx(Object.assign({}, opts, { state: srAmendSt({ reportPending: { by: 'uid-ed', at: Date.now(), te: 12345, cash: 2500, was: {} } }) }));
+  P.run("amendShiftReport('rep-1', { te: '0', cash: '25', reason: 'x' })");
+  eq([P.get('patches.length'), P.get('toasts')], [0, ['This accept is still being saved. Edit it once it has gone through.']], 'mid-accept');
+});
+
+test('shift report edits: a corrected report reaches the block on every leader’s device, and a lost accept settles instead of rolling back', () => {
+  // The admin's own save never landed (or another admin made it): the block holds the figures before.
+  const M = srLeaderCtx({ state: srAmendSt(), reports: [srAmended()] });
+  M.run('shiftReportsReconcile()');
+  eq([M.block('b1').salesCents, M.block('b1').reportId, M.get('commits')], [0, 'rep-1', 1], 'the block follows the correction');
+  M.run('shiftReportsReconcile()');
+  eq(M.get('commits'), 1, 'and only once');
+  // A block that holds something else is left alone (a hand edit), and so is one mid-accept.
+  const H = srLeaderCtx({ state: srAmendSt({ salesCents: 5000 }), reports: [srAmended()] });
+  H.run('shiftReportsReconcile()');
+  eq([H.block('b1').salesCents, H.get('commits')], [5000, 0], 'a block holding other figures');
+  // An accept this leader made, whose save was lost, while an admin corrected the report: settled, then corrected.
+  const pend = { by: 'uid-ed', at: Date.now(), te: 12345, cash: 2500, collected: true, was: { salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '', reportId: '', reportFrom: '' },
+    wrote: { counted: 'Nora Newfamily', verified: 'Sam Leader' } };
+  const A = srLeaderCtx({ state: srAmendSt({ reportPending: pend }), reports: [srAmended()] });
+  A.landed();
+  A.run('shiftReportsReconcile()');
+  eq([A.block('b1').reportPending, A.block('b1').reportId, A.block('b1').salesCents, A.get('patches.length')], [undefined, 'rep-1', 0, 0],
+    'settled against the accepted figures, then corrected — not undone');
+  ok(!A.get('toasts').some((t) => /different figures/.test(t)), 'told another leader accepted different figures');
+  // A report accepted with figures this accept never wrote is still undone.
+  const D = srLeaderCtx({ state: srAmendSt({ reportPending: pend }), reports: [srAmended({ amendments: [Object.assign({}, srAmended().amendments[0], { was: { teCents: 9999, cashCents: 2500, salesCashCents: 0 } })] })] });
+  D.landed();
+  D.run('shiftReportsReconcile()');
+  ok(D.get('toasts').some((t) => /Another leader accepted different figures for this report\./.test(t)), 'a different accept is still undone');
+  // The cash from popcorn sales: corrected to 0 the entry goes; to another amount it follows; one already recorded keeps its amount (the server refuses that edit).
+  const cashSt = (cents, outcome) => srAmendSt({ salesCash: [{ reportId: 'rep-1', cents: 700, from: 'Nora Newfamily', outcome: outcome || null }] });
+  const fix = (now) => srAmended({ salesCashCents: now, amendments: [{ at: 1, byName: 'Kim Admin', reason: 'x', was: { teCents: 12345, cashCents: 2500, salesCashCents: 700 },
+    now: { teCents: 0, cashCents: 2500, salesCashCents: now } }] });
+  const C0 = srLeaderCtx({ state: cashSt(), reports: [fix(0)] });
+  C0.run('shiftReportsReconcile()');
+  eq([C0.block('b1').salesCents, C0.block('b1').salesCash], [0, undefined], 'cash from sales corrected to nothing');
+  const fixTe = (now) => srAmended({ teCents: 12345, salesCashCents: now, amendments: [{ at: 1, byName: 'Kim Admin', reason: 'x', was: { teCents: 12345, cashCents: 2500, salesCashCents: 700 },
+    now: { teCents: 12345, cashCents: 2500, salesCashCents: now } }] });
+  const C5 = srLeaderCtx({ state: cashSt(), reports: [fixTe(500)] });
+  C5.run('shiftReportsReconcile()');
+  eq(C5.block('b1').salesCash.map((e) => e.cents), [500], 'cash from sales corrected, the amounts as they were');
+  // A viewer's device never writes.
+  const V = srLeaderCtx({ role: 'viewer', state: srAmendSt(), reports: [srAmended()] });
+  V.run('srAmendMirror()');
+  eq([V.block('b1').salesCents, V.get('commits')], [12345, 0], 'a viewer');
+});
+
+test('shift report edits: the family reads that a leader adjusted their accepted totals, and why', () => {
+  const line = (o) => srLine(srStatusCtx(o), srEv(SR_TODAY));
+  const adj = line({ reports: [srReport({ status: 'accepted', reviewedByName: 'Sam', teCents: 0,
+    amendments: [{ at: 1, byName: 'Kim', reason: 'Rained out; <b>wagon</b> sales', was: { teCents: 12345, cashCents: 2500, salesCashCents: 0 }, now: { teCents: 0, cashCents: 2500, salesCashCents: 0 } }] })] });
+  ok(/Accepted by Sam\. Kim adjusted the totals: “Rained out; &lt;b&gt;wagon&lt;\/b&gt; sales”\. It counts toward the scouts’ sales\./.test(adj), 'the reason, escaped');
+  ok(/\$0\.00 Trail’s End · \$25\.00 cash/.test(adj) && !/<button/.test(adj), 'the figures as they now stand, and nothing to press');
+  ok(/Accepted by Sam\. It counts toward the scouts’ sales\./.test(line({ reports: [srReport({ status: 'accepted', reviewedByName: 'Sam' })] })), 'an accepted report nobody corrected');
+  // The parent view stays an allowlist: nothing of a correction is published there.
+  ok(!/amend/i.test(codeOnly(BPV())), 'buildParentView publishes a correction');
 });
 
 test('shift reports S-3: the storefront list says how many wait, and a report whose shift is gone can still be sent back', () => {
@@ -19040,13 +19266,16 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
   const reps = [
     srRep({ status: 'accepted', confirmed: true, confirmedByName: 'Bo Parent', acceptedByName: 'Sam Leader', salesCashCents: 2000,
       salesCashOutcome: 'collected', salesCashByName: 'Lee Leader', salesCashAt: new Date(2026, 9, 4, 12).getTime() }),
-    srRep({ id: 'rep-2', blockId: 'b2', teCents: 8000, cashCents: 0, status: 'accepted', collected: false, overridden: true, acceptNote: '=SUM(A1)', acceptedByName: 'Sam Leader' }),
+    srRep({ id: 'rep-2', blockId: 'b2', teCents: 8000, cashCents: 0, status: 'accepted', collected: false, overridden: true, acceptNote: '=SUM(A1)', acceptedByName: 'Sam Leader',
+      // Keith (2026-10-07): an admin corrected it after the accept.
+      amendments: [{ at: new Date(2026, 9, 5, 12).getTime(), byName: 'Kim Admin', reason: 'Rained out; wagon sales', was: { teCents: 9500, cashCents: 0, salesCashCents: 0 },
+        now: { teCents: 8000, cashCents: 0, salesCashCents: 0 } }] }),
     srRep({ id: 'rep-3', blockId: 'b2', status: 'returned', reviewNote: 'Recount the jar', submittedAt: Date.parse('2026-10-03T20:00:00Z') }),
     srRep({ id: 'rep-4', blockId: 'gone', status: 'submitted', submittedAt: Date.parse('2026-10-04T20:00:00Z') }),
     srRep({ id: 'rep-5', status: 'accepted', collected: true, acceptedByName: 'Lee Leader', submittedAt: Date.parse('2025-11-01T20:00:00Z'), sfId: 'old', blockId: 'x' })];
   const L = srLeaderCtx({ state: st, reports: reps });
   vm.runInContext(['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'SR_HISTORY_CSV_HEAD',
-    'SR_HISTORY_REASONS_HEAD', 'srCashHistorySay', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE', 'renderShiftReportHistory'].map(decl).join('\n'), L.ctx);
+    'SR_HISTORY_REASONS_HEAD', 'srCashHistorySay', 'srAmendHistorySay', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE', 'renderShiftReportHistory'].map(decl).join('\n'), L.ctx);
   const rows = L.get('shiftReportHistoryRows(2026)');
   eq(rows.map((r) => [r.storefront, r.shift, r.verifiedBy, r.acceptedBy, r.overrideReason, r.status, r.sentBackReason, r.differs]), [
     ['Kroger', '10:00–12:00', 'confirmed by Bo Parent', 'Sam Leader', '', 'accepted', '', 'N'],
@@ -19055,15 +19284,19 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
     ['(no longer on the schedule)', '', '', '', '', 'submitted', '', '']], 'the rows: last season’s left out');
   // Youth-protection review 4: by default the CSV holds figures and adults' names, and no written reason.
   const csv = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026))');
-  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Popcorn sales cash not converted,"Collected / converted by, on",Sent by,Verified by,Accepted by,Status,Block now differs from report', 'the header');
-  ok(/2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,20\.00,"collected by Lee Leader, 2026-10-04",Nora Newfamily,confirmed by Bo Parent,Sam Leader,accepted,N/.test(csv), 'the cells');
+  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Popcorn sales cash not converted,"Collected / converted by, on",Sent by,Verified by,Accepted by,Edited after accepting,Status,Block now differs from report', 'the header');
+  ok(/2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,20\.00,"collected by Lee Leader, 2026-10-04",Nora Newfamily,confirmed by Bo Parent,Sam Leader,,accepted,N/.test(csv), 'the cells');
+  // An admin's correction: who, when and the figures before, in its own column; the reason only with the reasons.
+  ok(/,Sam Leader,"Kim Admin, 2026-10-05, was \$95\.00 \/ \$0\.00 \/ \$0\.00",accepted,Y\n/.test(csv) && !/wagon/.test(csv), 'the correction in the CSV');
   ok(/12:00–14:00,80\.00,0\.00,0\.00,,/.test(csv), 'S-5: a report with no cash from sales to collect says 0.00, and nobody collected it');
   ok(!/SUM|Recount/.test(csv), 'a leader’s reason in the CSV by default');
   const csvR = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026), true)');
-  ok(csvR.split('\n')[0].endsWith(',Leaders’ reasons (override or sent back)') && /,'=SUM\(A1\)\n/.test(csvR) && /,Recount the jar\n/.test(csvR),
+  ok(csvR.split('\n')[0].endsWith(',Leaders’ reasons (override / edit / sent back)') && /,'=SUM\(A1\) \/ Rained out; wagon sales\n/.test(csvR) && /,Recount the jar\n/.test(csvR),
     'asked for: one labelled last column, formula-safe');
   eq(L.run('srHistoryFileName(2026)'), 'shift-reports-2026.csv', 'a generic file name');
   const html = L.run('renderShiftReportHistory()');
+  ok(/<th scope="col">Override reason<\/th><th scope="col">Edited after accepting<\/th>/.test(html) &&
+    /<td>Kim Admin, 2026-10-05, was \$95\.00 \/ \$0\.00 \/ \$0\.00: “Rained out; wagon sales”<\/td>/.test(html), 'the correction in the table, with its reason');
   ok(/<th scope="col">Cash donations<\/th><th scope="col">Popcorn sales cash not converted<\/th>/.test(html) && /<td class="num">\$20\.00<\/td>/.test(html),
     'S-5: the table’s cash-from-sales column');
   ok(/Pack 569 — shift reports, 2026–27/.test(html) && /data-act="sr-history-csv"/.test(html) && /data-act="te-print"/.test(html), 'the year, print and CSV');

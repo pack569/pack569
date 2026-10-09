@@ -564,6 +564,18 @@ pack record, so a parent who can send one still can't write anything else.
   refuses the same person as counter and verifier. A leader can send back a waiting or an
   accepted report, and must give a reason. The family then sends a corrected report as a new
   one.
+- **Correcting an accepted report** (Keith, 2026-10-07): only an `admin`, never an `editor`,
+  can change the figures of a report that is **accepted**, and must give a reason of at most
+  300 characters, which the family sees. The report stays accepted. The admin's page names the
+  figures it was shown, and the change is refused if the report holds anything else by then.
+  The same people are kept out as for accepting it: the sender, the parent who confirmed it, and
+  anyone in the sender's family. Cash from popcorn sales that a leader has already marked
+  collected or converted keeps its amount until that is undone, and it still can't be more
+  than the Trail's End amount. Every correction is kept in its own table
+  (`shift_report_amendments`), with the figures before and after, the reason, and who made it
+  and when, and is audited as `shift.amend`. The record of the accept itself doesn't change.
+  The family sees the new figures, the reason and the admin's first name; leaders see every
+  correction in full.
 - **A different family from the sender** (Keith, 2026-10-01): the accepting leader must not be
   in the sender's family. The server works out each account's families from the stored pack
   record: the families of the scouts an admin has linked that account to on the Members card,
@@ -634,7 +646,7 @@ pack record, so a parent who can send one still can't write anything else.
   leader who is also a parent can send, change, withdraw and confirm their own family's
   totals, as that parent. Everything else in the preview stays read-only. The rules above are
   unchanged, so the same leader still can't accept their own report, or record its cash.
-- Every report, edit, withdrawal, acceptance, send-back and record of the cash from sales is written to the `audit` table
+- Every report, edit, withdrawal, acceptance, send-back, admin's correction and record of the cash from sales is written to the `audit` table
   in the same step as the change itself.
 
 ### The sign-up link — the recommended way

@@ -28,7 +28,9 @@
 //     partial unique index is the backstop, so two families sending at once cannot both land.
 // What a parent reads: their own reports in full, and for every other block only whether it is
 // reported and where that stands — never another family's amounts, name or note. Leaders read
-// everything, as they read the ledger.
+// everything, as they read the ledger. Each report carries `amendments`, an admin's corrections
+// after the accept (Keith, 2026-10-07; [rid].js action 'amend'): in full to leaders, and on a
+// family's own report with the reason and the admin's first name only.
 // S-4 (Keith, 2026-10-01) — ONE EXCEPTION, ON PURPOSE. A shift with scouts from two or more
 // families needs a second parent to confirm the totals, and nobody can confirm figures they
 // cannot see. So a waiting report that needs a confirmation, on a shift from the reporting
@@ -61,7 +63,29 @@ export const firstName = (n) => {
   const s = String(n || '').trim();
   return s && s.indexOf('@') === -1 ? s.split(/\s+/)[0] : null;
 };
-export function reportOut(row, uid, full) {
+// Keith (2026-10-07) — an admin's corrections to an accepted report (action 'amend';
+// migrations/0005_shift_report_amendments.sql), oldest first: what it held before, what it holds
+// after, why, who and when. A family reads its own report's, since the reason is written for them
+// to read, with the admin's FIRST name only and never an account id; a leader reads them in full.
+const AMEND_COLS = 'report_id, at, by_uid, by_name, reason, was_te_cents, was_cash_cents, was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents';
+function amendOut(a, full) {
+  const o = { at: a.at, byName: full ? (a.by_name || null) : firstName(a.by_name), reason: a.reason,
+    was: { teCents: a.was_te_cents, cashCents: a.was_cash_cents, salesCashCents: a.was_sales_cash_cents },
+    now: { teCents: a.te_cents, cashCents: a.cash_cents, salesCashCents: a.sales_cash_cents } };
+  if (full) o.byUid = a.by_uid;
+  return o;
+}
+// The amendments of the reports `inSql` names (a SELECT of report ids, bound by `args`), by report id.
+// A subquery, not a list of ids: D1 binds at most 100 values.
+export async function readAmendments(db, packId, inSql, args) {
+  const r = await db.prepare('SELECT ' + AMEND_COLS + ' FROM shift_report_amendments WHERE pack_id = ? AND report_id IN (' + inSql + ') ' +
+    'ORDER BY id').bind(packId, ...args).all();
+  const by = {};
+  for (const a of r.results || []) (by[a.report_id] || (by[a.report_id] = [])).push(a);
+  return by;
+}
+export const readReportAmendments = (db, packId, id) => readAmendments(db, packId, '?', [id]).then((by) => by[id] || []);
+export function reportOut(row, uid, full, amends) {
   const r = { id: row.id, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents,
     salesCashCents: row.sales_cash_cents || 0, note: row.note, status: row.status, mine: row.submitted_by_uid === uid, submittedByName: row.submitted_by_name,
     submittedAt: row.submitted_at, updatedAt: row.updated_at,
@@ -72,7 +96,8 @@ export function reportOut(row, uid, full) {
     // S-4: the second parent's sign-off (first name to a parent), and a leader's override.
     needsConfirm: row.needs_confirm === 1, confirmed: !!row.confirmed_by_uid,
     confirmedByName: full ? (row.confirmed_by_name || null) : firstName(row.confirmed_by_name),
-    confirmedAt: row.confirmed_at || null, overridden: row.overridden === 1 };
+    confirmedAt: row.confirmed_at || null, overridden: row.overridden === 1,
+    amendments: (amends || []).map((a) => amendOut(a, full)) };
   if (full) {
     r.submittedByUid = row.submitted_by_uid; r.reviewedByUid = row.reviewed_by_uid || null; r.confirmedByUid = row.confirmed_by_uid || null;
     // The accept, as it was made (written once): who, when, why if overridden, and whether the
@@ -182,16 +207,22 @@ async function list({ request, db, packId, role, user }) {
   // A parent's answer only ever needs the reports holding a block, and closed ones from the last
   // 30 days (security re-check 3: bounded, not the pack's whole history on every family's poll).
   const leader = canReadAllShiftReports(role) && asParam !== 'parent';
-  const r = await db.prepare('SELECT ' + REPORT_COLS + ' FROM shift_reports WHERE pack_id = ?' +
-    (leader ? " AND (status = 'submitted' OR submitted_at > ?)" : " AND (status IN ('submitted', 'accepted') OR submitted_at > ?)") +
-    ' ORDER BY submitted_at DESC, id')
-    .bind(packId, Date.now() - (leader ? SHIFT_REPORT_LEADER_DAYS : 30) * 86400000).all();
+  const which = leader ? " AND (status = 'submitted' OR submitted_at > ?)" : " AND (status IN ('submitted', 'accepted') OR submitted_at > ?)";
+  const since = Date.now() - (leader ? SHIFT_REPORT_LEADER_DAYS : 30) * 86400000;
+  const r = await db.prepare('SELECT ' + REPORT_COLS + ' FROM shift_reports WHERE pack_id = ?' + which + ' ORDER BY submitted_at DESC, id')
+    .bind(packId, since).all();
   const rows = r.results || [];
+  // An admin's corrections (2026-10-07): a leader's, of every report in the answer; a parent's, of
+  // their own reports only, and read only when they have one.
+  const amends = (leader || rows.some((row) => row.submitted_by_uid === user.uid))
+    ? await readAmendments(db, packId, 'SELECT id FROM shift_reports WHERE pack_id = ?' + which + (leader ? '' : ' AND submitted_by_uid = ?'),
+      leader ? [packId, since] : [packId, since, user.uid])
+    : {};
   const view = await readView(db, packId);
   let recP = null;
   const getRec = () => recP || (recP = readPackRecord(db, packId));
   const { myShifts, linked } = await myShiftsAndLink(getRec, user.uid, view);
-  if (leader) return json(200, { reports: rows.map((row) => reportOut(row, user.uid, true)), others: [], myShifts, linked });
+  if (leader) return json(200, { reports: rows.map((row) => reportOut(row, user.uid, true, amends[row.id])), others: [], myShifts, linked });
   // A parent: their own in full. For anyone else's, per block, only the report that holds it
   // (waiting or accepted) or else the latest — and of that only its block and status.
   const own = rows.filter((row) => row.submitted_by_uid === user.uid);
@@ -236,7 +267,7 @@ async function list({ request, db, packId, role, user }) {
     }
     return o;
   });
-  return json(200, { reports: own.map((row) => reportOut(row, user.uid, false)), others, myShifts, linked });
+  return json(200, { reports: own.map((row) => reportOut(row, user.uid, false, amends[row.id])), others, myShifts, linked });
 }
 
 async function submit({ request, db, packId, role, user, member }) {
