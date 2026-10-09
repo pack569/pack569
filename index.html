@@ -932,17 +932,22 @@
   /* Keith (2026-10-08) — popcorn left on the table: small whole-number fields, two or more to a row. */
   .sr-count { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
   .sr-count legend { padding: 0; font-size: 0.78rem; font-weight: 600; color: var(--ink-soft); }
-  .sr-count-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px 12px; align-items: end; }
+  .sr-count-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px 12px; align-items: start; }
   .sr-count-item { display: flex; flex-direction: column; gap: 3px; font-size: 0.8rem; font-weight: 600; color: var(--ink-soft); min-width: 0; }
   .sr-count-item input.count-in { width: 6.5em; max-width: 100%; min-height: 44px; }
+  /* A count that isn't a whole number: a thicker border AND words under it, not colour alone. */
+  .sr-count-item input.count-in[aria-invalid="true"] { border: 2px solid var(--bad); }
+  .sr-count-bad { color: var(--bad); font-weight: 650; }
   .sr-count-read ul { margin: 2px 0 4px; padding-left: 18px; }
   /* Keith (2026-10-08) — one report's details: facts as label / value (stacked on a phone), and
      its timeline as a list, never a wide table, so nothing scrolls sideways. */
   .sr-details { overflow-wrap: anywhere; }
-  .sr-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: 0.86rem; }
+  .sr-facts { margin: 0; font-size: 0.86rem; }
+  .sr-facts > div { display: grid; grid-template-columns: 13em 1fr; gap: 0 14px; padding: 2px 0; break-inside: avoid; }
   .sr-facts dt { font-weight: 650; color: var(--ink-soft); }
   .sr-facts dd { margin: 0; }
-  @media (max-width: 520px) { .sr-facts { grid-template-columns: 1fr; gap: 0; } .sr-facts dd { margin: 0 0 6px; } }
+  .sr-fact-list { margin: 0; padding-left: 18px; }
+  @media (max-width: 520px) { .sr-facts > div { grid-template-columns: 1fr; padding: 0 0 6px; } }
   .sr-timeline { list-style: none; margin: 0; padding: 0; }
   .sr-timeline li { padding: 6px 0 8px 12px; border-left: 2px solid var(--line); break-inside: avoid; }
   .sr-timeline li + li { margin-top: 2px; }
@@ -22065,14 +22070,21 @@
     'too-many-today': 'That’s a lot of shift reports for one day. Ask a leader if you need to send more.',
     // Keith (2026-10-08) — the count of popcorn left on the table.
     'inventory-left': 'Count whole containers, like 4. Leave it blank if you didn’t count that one.',
-    'inventory-product': 'The pack’s popcorn list changed while you had this open. Reload the page and count again.',
-    'inventory': 'The pack’s popcorn list changed while you had this open. Reload the page and count again.'
+    // F3 (review round 1): the form stays open, so clearing the counts lets the totals go.
+    'inventory-product': 'The pack’s popcorn list changed while you had this open. Clear the popcorn counts and send your totals, ' +
+      'or reload the page and enter everything again.',
+    'inventory': 'The pack’s popcorn list changed while you had this open. Clear the popcorn counts and send your totals, ' +
+      'or reload the page and enter everything again.'
   };
   // Keith (2026-10-08) — "a simple-to-fill inventory report": the containers still on the table when
   // the shift ends, per product, OPTIONAL. The products are the ones the parent view lists for the
   // storefront (buildParentView's ev.products: id and name only). Information for the leaders: it
   // never changes the pack's inventory.
-  var SHIFT_REPORT_COUNT_HINT = 'Count the containers still on the table at the end of the shift. Leave blank if you didn’t count.';
+  var SHIFT_REPORT_COUNT_HINT = 'If you can, count every bag, box or tin still at the storefront: on the table, in cases under it, and in the car. ' +
+    'Count it with the next shift’s adult if they’re there. This helps leaders see what sold. Leave blank any you didn’t count.';
+  var SHIFT_REPORT_COUNT_LEGEND = 'Popcorn left at the end of your shift (optional)';
+  // F2: a count that isn't a whole number, naming the product.
+  function srCountBadSay(name) { return 'Enter a whole number for ' + (name || 'that product') + ', like 4, or leave it blank.'; }
   var SHIFT_REPORT_LEFT_MAX = 10000;
   var SHIFT_COUNT_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
   // What a form's count fields hold, as typed: { productId: text }, or null when it has none.
@@ -22081,6 +22093,15 @@
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
       if (el && typeof el.name === 'string' && el.name.indexOf('left:') === 0) { out = out || {}; out[el.name.slice(5)] = String(el.value == null ? '' : el.value); }
+    }
+    return out;
+  }
+  // The product names the count fields carry (data-name), for a refusal that names one (F2).
+  function srCountNames(f) {
+    var out = {}, els = (f && f.elements) || [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el && typeof el.name === 'string' && el.name.indexOf('left:') === 0 && el.dataset && el.dataset.name) out[el.name.slice(5)] = String(el.dataset.name);
     }
     return out;
   }
@@ -22111,13 +22132,14 @@
     var prods = arrOf(e && e.products).filter(function (p) { return p && typeof p.id === 'string' && SHIFT_COUNT_ID_RE.test(p.id) && p.name; });
     if (!prods.length) return '';
     var left = d.left || {};
-    return '<fieldset class="sr-count"><legend>Popcorn left on the table (optional)</legend>' +
+    return '<fieldset class="sr-count"><legend>' + esc(SHIFT_REPORT_COUNT_LEGEND) + '</legend>' +
       '<p class="sr-hint" id="srCountHint" style="margin:0">' + esc(SHIFT_REPORT_COUNT_HINT) + '</p><div class="sr-count-grid">' +
       prods.map(function (p) {
         var id = 'srLeft-' + p.id, isBad = bad === 'left:' + p.id;
         return '<label class="sr-count-item" for="' + id + '"><span>' + esc(String(p.name)) + '</span>' +
-          '<input id="' + id + '" name="left:' + esc(p.id) + '" class="count-in" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-describedby="srCountHint' +
-          (isBad ? ' srProblem' : '') + '"' + (isBad ? ' aria-invalid="true"' : '') + ' value="' + esc(left[p.id] == null ? '' : left[p.id]) + '"></label>';
+          '<input id="' + id + '" name="left:' + esc(p.id) + '" data-name="' + esc(String(p.name)) + '" class="count-in" inputmode="numeric" pattern="[0-9]*" autocomplete="off" aria-describedby="srCountHint' +
+          (isBad ? ' srProblem' : '') + '"' + (isBad ? ' aria-invalid="true"' : '') + ' value="' + esc(left[p.id] == null ? '' : left[p.id]) + '">' +
+          (isBad ? '<span class="small sr-count-bad">Whole number, or blank</span>' : '') + '</label>';
       }).join('') + '</div></fieldset>';
   }
   var SHIFT_REPORT_SAY_ELSE = 'Your totals didn’t go through. Reload the page and try again. If it happens again, give the totals to a leader.';
@@ -22231,7 +22253,7 @@
     if (note.length > SHIFT_REPORT_NOTE_MAX) return { problem: SHIFT_REPORT_SAY.note, field: 'note' };
     // Keith (2026-10-08): the count, when the form had one (d.left); blank is "not counted".
     var count = d.left ? srCountParse(d.left) : null;
-    if (count && count.bad) return { problem: SHIFT_REPORT_SAY['inventory-left'], field: 'left:' + count.bad };
+    if (count && count.bad) return { problem: srCountBadSay((d.leftNames || {})[count.bad]), field: 'left:' + count.bad };
     if (d.attest !== true) return { problem: SHIFT_REPORT_SAY.attest, field: 'attest' };
     var body = { teCents: te, cashCents: cash, note: note, attest: true };
     if (salesCash > 0) body.salesCashCents = salesCash;   // left out, the server's 0
@@ -22379,7 +22401,7 @@
     var aria = function (what) { return ' aria-label="' + esc(what + forShift) + '"'; };
     var figs = function (r) {
       return ' <span class="sr-figs">' + esc(fmt(r.teCents || 0)) + ' Trail’s End · ' + esc(fmt(r.cashCents || 0)) + ' cash donations' +
-        srSalesCashFig(r) + '</span>';
+        srSalesCashFig(r) + (arrOf(r.inventory).length ? ' · popcorn left counted' : '') + '</span>';
     };
     var h = '';
     // S-4: a report that needs a second parent says which step it is at.
@@ -22657,6 +22679,7 @@
     d.note = String(fd.get('note') || '');
     d.attest = fd.get('attest') === 'on';
     d.left = srCountTyped(f);   // only the products this form shows; null when it shows none
+    d.leftNames = srCountNames(f);
     var made = shiftReportBody(d);
     d.problem = made.problem || '';
     d.problemField = made.field || '';
@@ -26241,7 +26264,8 @@
     srCountList(r.inventory).forEach(function (x) { if (ids.indexOf(x.productId) === -1) ids.push(x.productId); });
     if (!ids.length) return '';
     var had = srCountText(r.inventory), typed = d.left || {};
-    return '<fieldset class="sr-count"><legend>Popcorn left on the table</legend><div class="sr-count-grid">' + ids.map(function (pid) {
+    return '<fieldset class="sr-count"><legend>Popcorn left at the end of the shift</legend>' +
+      '<p class="sr-hint" style="margin:0">Leave blank for any product that wasn’t counted.</p><div class="sr-count-grid">' + ids.map(function (pid) {
       var v = typeof typed[pid] === 'string' ? typed[pid] : (had[pid] || '');
       return '<label class="sr-count-item" for="srAmLeft-' + esc(pid) + '"><span>' + esc(srProductName(pid)) + '</span><input id="srAmLeft-' + esc(pid) + '" name="left:' + esc(pid) +
         '" class="count-in" inputmode="numeric" pattern="[0-9]*" autocomplete="off" value="' + esc(v) + '"></label>';
@@ -26483,6 +26507,8 @@
      holds (HELD_ACTS). */
   function srCanSeeDetails() { return leaderReportsOn() && sync.myRole === 'admin'; }
   var SR_STATUS_WORDS = { submitted: 'Waiting for a leader', accepted: 'Accepted', returned: 'Sent back', withdrawn: 'Withdrawn by the family' };
+  // Review round 1 (D7): the sheet prints the family's note and leaders' reasons.
+  var SR_DETAILS_DONT_SHARE = 'Don’t share or post this.';
   var SR_DETAILS_SAY = {
     forbidden: 'Only an admin can see a report’s details and who changed it.',
     offline: 'The pack’s server couldn’t be reached. Try again in a moment.',
@@ -26516,18 +26542,19 @@
     [['teCents', 'Trail’s End'], ['cashCents', 'Cash donations'], ['salesCashCents', 'Cash from popcorn sales not converted']].forEach(function (k) {
       if (was[k[0]] !== now[k[0]]) out.push(k[1] + ' ' + fmt(was[k[0]]) + ' → ' + fmt(now[k[0]]));
     });
-    return out.length ? out : ['The figures stayed the same.'];
+    return out.length ? out : ['The money totals stayed the same.'];
   }
   // A step's change to the count of popcorn left (2026-10-08), or nothing when it didn't change it.
   function srStepCount(e) {
-    if (e && e.inventoryUnknown) return ['The count of popcorn left changed (too long to keep in the history).'];
+    if (e && e.inventoryUnknown) return ['The popcorn-left count changed. The history didn’t keep the numbers because the list was too long.'];
     if (!e || !('inventory' in e)) return [];
     var c = srCountChanges(e.wasInventory, e.inventory);
     return c.length ? ['Popcorn left: ' + c.join(', ')] : [];
   }
   // One step of the timeline, as a leader reads it: { head: 'Edited by Kim Admin', lines: [...] },
   // or null for a step this page doesn't know. The names are the server's (full names, no email).
-  function srStepSay(e) {
+  // `r` (optional): the report, for what an override went without.
+  function srStepSay(e, r) {
     if (!e || typeof e.action !== 'string') return null;
     // The server never sends an email; if one ever came, it isn't shown (youth-protection review 3).
     var n = String(e.byName == null ? '' : e.byName).trim();
@@ -26541,7 +26568,7 @@
       if (arrOf(e.inventory).length) lines.push('Popcorn left: ' + srCountSay(e.inventory));
       if (e.needsConfirm) lines.push('Scouts from more than one family were on the shift, so a second parent needed to confirm it.');
     } else if (a === 'shift.report.edit') {
-      head = 'Changed by ' + who + ', before a leader looked at it';
+      head = 'Changed by ' + who + ' (the family), before a leader checked it';
       lines = srFigureChanges(e.was, e.figures).concat(srStepCount(e));
       if (e.confirmationCleared) lines.push('The second parent’s confirmation was cleared, since the figures changed.');
     } else if (a === 'shift.report.withdraw') {
@@ -26550,16 +26577,21 @@
       head = 'Confirmed by ' + who + ', a parent from another family on the shift';
       lines.push(srFiguresSay(e.figures));
     } else if (a === 'shift.accept' || a === 'shift.accept.override') {
-      head = 'Accepted by ' + who + (a === 'shift.accept.override' ? ', with a reason' : '');
+      // Review round 1: an override says what usual check it went without.
+      var over = a === 'shift.accept.override';
+      head = 'Accepted by ' + who + (over ? ' without the usual second check, with a reason' : '');
       lines.push(srFiguresSay(e.figures));
       if (e.collected) lines.push('They collected and counted the cash themselves.');
-      if (e.sameFamily) lines.push('Same family as the parent who sent it.');
+      if (over) {
+        lines.push(e.sameFamily ? who + ' is in the same family as the parent who sent it.'
+          : r && r.needsConfirm ? 'No second parent confirmed it.' : 'The leader didn’t collect the cash.');
+      } else if (e.sameFamily) lines.push(who + ' is in the same family as the parent who sent it.');
       lines.push(quote(a === 'shift.accept.override' ? 'Reason' : 'Note', e.reason));
     } else if (a === 'shift.return') {
       head = 'Sent back by ' + who + (e.from === 'accepted' ? ', after it was accepted' : '');
       lines.push(quote('Reason', e.reason));
     } else if (a === 'shift.amend') {
-      head = 'Edited by ' + who;
+      head = 'Edited by ' + who + ' after it was accepted';
       lines = srFigureChanges(e.was, e.figures).concat(srStepCount(e));
       lines.push(quote('Reason', e.reason));
     } else if (a.indexOf('shift.salescash.') === 0) {
@@ -26616,10 +26648,17 @@
     }
   }
   // The button, for an admin: on a season row (`from` 'history') or under a block's accepted report.
+  // Each button names its report for a screen reader (D6): "Details for Sat, Oct 3, Kroger, 10:00 AM–12:00 PM".
+  function srDetailsLabel(rid) {
+    var r = srReport(rid), blk = r && srBlockOf(r);
+    if (!blk) return 'Details for this shift report';
+    return 'Details for ' + [fmtDate(blk.sf.date), String(blk.sf.name || 'Storefront'), fmtTimeRange(blk.b.start, blk.b.end) || String(blk.b.label || '')]
+      .filter(Boolean).join(', ');
+  }
   function srDetailsButton(rid, from) {
     if (!srCanSeeDetails() || !rid) return '';
     return '<button type="button" class="btn small ghost" data-act="sr-details-open" data-rid="' + esc(rid) + '"' +
-      (from ? ' data-from="' + esc(from) + '"' : '') + ' aria-label="Details and who changed this report">Details</button>';
+      (from ? ' data-from="' + esc(from) + '"' : '') + ' aria-label="' + esc(srDetailsLabel(rid)) + '">Details</button>';
   }
   function renderShiftReportDetails(o) {
     var r = o.report || srReport(o.rid);
@@ -26628,11 +26667,15 @@
       '<button type="button" class="btn" data-act="sr-details-back">&larr; Back</button>' +
       '<button type="button" class="btn" data-act="te-print">Print / Save PDF</button></div>' +
       '<div class="summary-sheet sr-details"><h1 style="margin:0">Shift report details</h1>' +
-      '<p class="muted small" style="margin:0 0 10px">Admins only. What this report says now, and every change to it.</p>';
+      '<p class="muted small" style="margin:0">Admins only. What this report says now, and each change to it, oldest first.</p>' +
+      '<p class="small" style="margin:0 0 10px"><strong>' + esc(SR_DETAILS_DONT_SHARE) + '</strong></p>';
     if (!srCanSeeDetails()) return h + '<p class="small warn">' + esc(SR_DETAILS_SAY.forbidden) + '</p></div></div></div>';
     if (r) {
       var blk = srBlockOf(r);
-      var fact = function (k, v) { return '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>'; };
+      // Each label and value kept together on paper (D4); `html` is already escaped.
+      var factHtml = function (k, html) { return '<div><dt>' + esc(k) + '</dt><dd>' + html + '</dd></div>'; };
+      var fact = function (k, v) { return factHtml(k, esc(v)); };
+      var counted = srCountList(r.inventory);
       var d = new Date(r.submittedAt || 0);
       var date = blk && blk.sf.date ? blk.sf.date : (r.submittedAt ? d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) : '');
       h += '<dl class="sr-facts">' +
@@ -26640,16 +26683,19 @@
         (date ? fact('Date', fmtDate(date)) : '') +
         (blk ? fact('Shift', fmtTimeRange(blk.b.start, blk.b.end) || String(blk.b.label || '')) : '') +
         fact('Sent by', (srNameClean(r.submittedByName) || 'a family') + (r.submittedAt ? ' · ' + srWhen(r.submittedAt) : '')) +
-        fact('Status', SR_STATUS_WORDS[r.status] || String(r.status || '')) +
+        fact('Status', r.status === 'submitted' && r.needsConfirm && !r.confirmed ? 'Waiting for a second parent to confirm'
+          : SR_STATUS_WORDS[r.status] || String(r.status || '')) +
         fact('Trail’s End', fmt(r.teCents || 0)) + fact('Cash donations', fmt(r.cashCents || 0)) +
         fact('Cash from popcorn sales not converted', fmt(r.salesCashCents || 0) +
           (r.salesCashCents > 0 ? ' · ' + (srCashHistorySay(r) || 'still to collect') : '')) +
         fact('Note', r.note ? '“' + r.note + '”' : 'None') +
-        fact('Popcorn left on the table', srCountList(r.inventory).map(function (x) { return srCountLine(r, x); }).join('; ') || 'Not counted') +
+        (counted.length ? factHtml('Popcorn left at the end of the shift', '<ul class="sr-fact-list">' +
+          counted.map(function (x) { return '<li>' + esc(srCountLine(r, x)) + '</li>'; }).join('') + '</ul>') : fact('Popcorn left at the end of the shift', 'Not counted')) +
         fact('Second parent', !r.needsConfirm ? 'Not needed: one family on the shift'
           : r.confirmed ? 'Confirmed by ' + (srNameClean(r.confirmedByName) || 'a parent') + (r.confirmedAt ? ' · ' + srWhen(r.confirmedAt) : '') : 'Not confirmed') +
-        (r.acceptedByName || r.acceptedAt ? fact('Accepted', 'By ' + (ledgerStampClean(r.acceptedByName || '') || 'a leader') + (r.acceptedAt ? ' · ' + srWhen(r.acceptedAt) : '') +
-          (r.collected ? ', who collected and counted the cash' : '') + (r.overridden ? '. With a reason: “' + String(r.acceptNote || '') + '”' : '')) : '') +
+        (r.acceptedByName || r.acceptedAt ? fact('Accepted', (ledgerStampClean(r.acceptedByName || '') || 'a leader') + (r.acceptedAt ? ' · ' + srWhen(r.acceptedAt) : '')) : '') +
+        (r.collected ? fact('Cash counted by', ledgerStampClean(r.acceptedByName || '') || 'the accepting leader') : '') +
+        (r.overridden ? fact('Reason for accepting', '“' + String(r.acceptNote || '') + '”') : '') +
         (r.status === 'returned' ? fact('Sent back', 'By ' + (ledgerStampClean(r.reviewedByName || '') || 'a leader') + (r.reviewedAt ? ' · ' + srWhen(r.reviewedAt) : '') +
           (r.reviewNote ? ': “' + r.reviewNote + '”' : '')) : '') +
         '</dl>';
@@ -26660,8 +26706,8 @@
       h += '<p class="small warn" role="alert">' + esc(o.error) + '</p>' +
         '<div class="sr-acts no-print"><button type="button" class="btn small" data-act="sr-details-retry">Try again</button></div>';
     } else {
-      var steps = arrOf(o.history).map(function (e) { var s = srStepSay(e); return s ? { e: e, s: s } : null; }).filter(Boolean);
-      if (o.truncated) h += '<p class="small muted">Only the latest ' + steps.length + ' changes are shown.</p>';
+      var steps = arrOf(o.history).map(function (e) { var s = srStepSay(e, r); return s ? { e: e, s: s } : null; }).filter(Boolean);
+      if (o.truncated) h += '<p class="small muted">This report has more changes than fit here. The newest ' + steps.length + ' are shown.</p>';
       if (!steps.length) h += '<p class="small muted">No changes are recorded for this report.</p>';
       else {
         h += '<ol class="sr-timeline">' + steps.map(function (x) {

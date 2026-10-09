@@ -91,7 +91,7 @@ const SR_OFF = "function shiftReportToday() { return '2026-09-28'; }\nfunction p
 // Keith (2026-10-08) — the count of popcorn left on a shift report: the family's form and body,
 // and the leaders' reading of it. Every context that draws or sends a report needs them.
 const SR_COUNT_FAMILY_FNS = ['SHIFT_REPORT_COUNT_HINT', 'SHIFT_REPORT_LEFT_MAX', 'SHIFT_COUNT_ID_RE', 'srCountTyped', 'srCountParse', 'srCountText',
-  'srCountKey', 'parentShiftCountFields'];
+  'srCountKey', 'parentShiftCountFields', 'SHIFT_REPORT_COUNT_LEGEND', 'srCountBadSay', 'srCountNames'];
 const SR_COUNT_LEADER_FNS = ['srProductName', 'srCountList', 'srSentTo', 'srCountLine', 'SR_COUNT_INFO', 'srCountHtml', 'srCountSay', 'srCountChanges',
   'fmtClock', 'srHolding', 'srCountStart', 'SR_COUNT_HEAD', 'srEndOfDayLine', 'SR_END_OF_DAY_WHY',
   'srCountText', 'srCountKey', 'srCountParse', 'SHIFT_REPORT_LEFT_MAX', 'SHIFT_COUNT_ID_RE', 'srAmendCountFields', 'srCountTyped'];
@@ -18071,7 +18071,7 @@ function srLeaderCtx(o) {
        'srParentStore', 'srHomeFamilyOn', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
        'srCanAmend', 'srAmendNotMine', 'srAmends', 'srAcceptedFigures', 'srAmendSay', 'srAmendToBlock', 'srAmendMirror', 'renderShiftReportAmendForm', 'amendShiftReport',
-       'srCanSeeDetails', 'srDetailsButton', ...SR_COUNT_LEADER_FNS,
+       'srCanSeeDetails', 'srDetailsButton', 'srDetailsLabel', ...SR_COUNT_LEADER_FNS,
        'shiftReportCents', 'SHIFT_REPORT_MAX_CENTS'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }
     function shiftReportToday() { return todayISO(); }   // the pack's day, here the test's`, ctx);
@@ -19544,7 +19544,7 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
 // Keith (2026-10-08) — one report's details and who changed it, admins only.
 const SR_DETAILS_FNS = ['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'SR_HISTORY_CSV_HEAD',
   'SR_HISTORY_REASONS_HEAD', 'srCashHistorySay', 'srAmendHistorySay', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE',
-  'renderShiftReportHistory', 'SR_STATUS_WORDS', 'SR_DETAILS_SAY', 'srDetailsMessage', 'srStepFigs', 'srFiguresSay', 'srFigureChanges', 'srStepSay', 'srStepCount',
+  'renderShiftReportHistory', 'SR_STATUS_WORDS', 'SR_DETAILS_DONT_SHARE', 'SR_DETAILS_SAY', 'srDetailsMessage', 'srStepFigs', 'srFiguresSay', 'srFigureChanges', 'srStepSay', 'srStepCount',
   'openShiftReportDetails', 'srLoadDetails', 'srDetailsAct', 'renderShiftReportDetails'];
 function srDetailsCtx(o) {
   const L = srLeaderCtx(Object.assign({ role: 'admin', uid: 'uid-kim', name: 'Kim Admin', state: Object.assign(srAmendSt(), { packName: 'Pack 569', budget: { programYear: 2026 } }),
@@ -19570,7 +19570,7 @@ const SR_DETAIL_HISTORY = [
 atest('shift report details: an admin opens a report’s details from the block or the season’s list, and reads who changed what, was → now', async () => {
   const L = srDetailsCtx();
   const line = () => L.run('renderBlockReportLine(state.storefronts[0].blocks[0])');
-  ok(/data-act="sr-return-open" data-rid="rep-1">Send back<\/button><button type="button" class="btn small ghost" data-act="sr-details-open" data-rid="rep-1" aria-label="Details and who changed this report">Details<\/button>/.test(line()),
+  ok(/data-act="sr-return-open" data-rid="rep-1">Send back<\/button><button type="button" class="btn small ghost" data-act="sr-details-open" data-rid="rep-1" aria-label="Details for D2026-10-03, Kroger, 10:00–12:00">Details<\/button>/.test(line()),
     'an admin’s Details beside Edit and Send back');
   // A job is never the gate: the member role is. Editors and viewers have no Details at all.
   for (const role of ['editor', 'viewer']) {
@@ -19594,10 +19594,14 @@ atest('shift report details: an admin opens a report’s details from the block 
   html = L.run('renderShiftReportDetails(ui.overlay)');
   ok(!/Loading/.test(html), 'still loading');
   ok(/<dt>Trail’s End<\/dt><dd>\$0\.00<\/dd>/.test(html) && /<dt>Status<\/dt><dd>Accepted<\/dd>/.test(html) && /<dt>Note<\/dt><dd>“Counted with Jo”<\/dd>/.test(html) &&
-    /<dt>Second parent<\/dt><dd>Not needed: one family on the shift<\/dd>/.test(html) && /<dt>Accepted<\/dt><dd>By Sam Leader · [^<]*, who collected and counted the cash<\/dd>/.test(html),
-    'the facts now in force');
+    /<dt>Second parent<\/dt><dd>Not needed: one family on the shift<\/dd>/.test(html) && /<div><dt>Accepted<\/dt><dd>Sam Leader · [^<]+<\/dd><\/div><div><dt>Cash counted by<\/dt><dd>Sam Leader<\/dd><\/div>/.test(html) &&
+    !/Reason for accepting/.test(html), 'the facts now in force: the accept split into its own facts (D4), each pair kept together');
+  ok(/Admins only\. What this report says now, and each change to it, oldest first\.<\/p><p class="small" style="margin:0 0 10px"><strong>Don’t share or post this\.<\/strong><\/p>/.test(html),
+    'the subtitle, and not to share it (D5, D7)');
+  ok(/\.sr-facts > div \{[^}]*break-inside: avoid/.test(SCRIPT_CSS), 'each fact kept together on paper');
   const steps = [...html.matchAll(/<li><p class="small" style="margin:0"><strong>([^<]*)<\/strong><\/p>(.*?)<\/li>/g)].map((m) => [m[1], m[2].replace(/<[^>]+>/g, '|')]);
-  eq(steps.map((x) => x[0]), ['Sent by Nora Newfamily', 'Changed by Nora Newfamily, before a leader looked at it', 'Accepted by Sam Leader', 'Edited by Kim Admin'],
+  eq(steps.map((x) => x[0]), ['Sent by Nora Newfamily', 'Changed by Nora Newfamily (the family), before a leader checked it', 'Accepted by Sam Leader',
+    'Edited by Kim Admin after it was accepted'],
     'every step, oldest first; one this page doesn’t know is left out');
   ok(/Trail’s End \$120\.00 → \$123\.45/.test(steps[1][1]) && !/Cash donations/.test(steps[1][1]), 'the family’s change: only what changed, was → now');
   ok(/Trail’s End \$123\.45 → \$0\.00/.test(steps[3][1]) && /Reason: “Rained out; &lt;b&gt;wagon&lt;\/b&gt; sales”/.test(steps[3][1]), 'the admin’s edit, with its reason, escaped');
@@ -19632,14 +19636,22 @@ atest('shift report details: an admin opens a report’s details from the block 
   // The step words for the rest of the actions.
   const say = (e) => L.get(`srStepSay(${JSON.stringify(e)})`);
   eq(say({ action: 'shift.accept.override', byName: 'Sam Leader', figures: { teCents: 100, cashCents: 0 }, sameFamily: true, reason: 'Nobody else there' }),
-    { head: 'Accepted by Sam Leader, with a reason', lines: ['Trail’s End $1.00 · cash donations $0.00', 'Same family as the parent who sent it.', 'Reason: “Nobody else there”'] }, 'an override');
+    { head: 'Accepted by Sam Leader without the usual second check, with a reason',
+      lines: ['Trail’s End $1.00 · cash donations $0.00', 'Sam Leader is in the same family as the parent who sent it.', 'Reason: “Nobody else there”'] }, 'an override, same family (D1)');
+  const ov = (r) => L.get(`srStepSay(${JSON.stringify({ action: 'shift.accept.override', byName: 'Kim', figures: { teCents: 100, cashCents: 0 }, reason: 'x' })}, ${JSON.stringify(r)})`).lines[1];
+  eq([ov({ needsConfirm: true }), ov({ needsConfirm: false })], ['No second parent confirmed it.', 'The leader didn’t collect the cash.'], 'what an override skipped');
+  // D3: waiting for a second parent.
+  L.run(`ui.overlay = { kind: 'sr-details', rid: 'rep-1', loading: false, error: '', history: [], report: ${JSON.stringify(srRep({ needsConfirm: true, confirmed: false }))} }`);
+  ok(/<dt>Status<\/dt><dd>Waiting for a second parent to confirm<\/dd>/.test(L.run('renderShiftReportDetails(ui.overlay)')), 'waiting for a second parent');
+  L.run(`ui.overlay = { kind: 'sr-details', rid: 'rep-1', loading: false, error: '', history: [{ at: 1, action: 'shift.report', byName: 'N', figures: { teCents: 1, cashCents: 0 } }], truncated: true, report: ${JSON.stringify(srRep())} }`);
+  ok(/This report has more changes than fit here\. The newest 1 are shown\./.test(L.run('renderShiftReportDetails(ui.overlay)')), 'truncated (D5)');
   eq(say({ action: 'shift.return', byName: 'Lee', from: 'accepted', reason: 'Recount' }), { head: 'Sent back by Lee, after it was accepted', lines: ['Reason: “Recount”'] }, 'a send-back');
   eq(say({ action: 'shift.confirm', byName: 'Bo Parent', figures: { teCents: 100, cashCents: 0, salesCashCents: 50 } }).lines,
     ['Trail’s End $1.00 · cash donations $0.00 · cash from popcorn sales not converted $0.50'], 'a confirm');
   eq(say({ action: 'shift.salescash.undo', byName: 'Lee', salesCashCents: 500, undid: 'collected' }).lines,
     ['Undid the record that $5.00 of cash from popcorn sales was collected. It’s still to collect.'], 'an undo');
   eq(say({ action: 'shift.report.edit', byName: 'x@example.com', was: null, figures: { teCents: 100, cashCents: 0 }, confirmationCleared: true }),
-    { head: 'Changed by a pack member, before a leader looked at it', lines: ['Trail’s End $1.00 · cash donations $0.00', 'The second parent’s confirmation was cleared, since the figures changed.'] },
+    { head: 'Changed by a pack member (the family), before a leader checked it', lines: ['Trail’s End $1.00 · cash donations $0.00', 'The second parent’s confirmation was cleared, since the figures changed.'] },
     'nothing to compare against, and never an email');
   // Wired in: the router, the click handler, and read-only while the reload gate holds.
   ok(/if \(o\.kind === 'sr-details'\) return renderShiftReportDetails\(o\);/.test(slice('renderOverlay')), 'the overlay router');
@@ -19702,15 +19714,23 @@ test('shift report count: the family’s form has one small optional whole-numbe
   const card = (d) => vm.runInContext('parentShiftReportCard', srStatusCtx({ ui: { shiftReport: Object.assign({ sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '', note: '', attest: false }, d) } }))(
     { events: [ev] }, SR_TODAY);
   const f = card({ left: { p1: '4' } });
-  ok(/<fieldset class="sr-count"><legend>Popcorn left on the table \(optional\)<\/legend><p class="sr-hint" id="srCountHint" style="margin:0">Count the containers still on the table at the end of the shift\. Leave blank if you didn’t count\.<\/p>/.test(f),
+  ok(f.indexOf('<fieldset class="sr-count"><legend>Popcorn left at the end of your shift (optional)</legend><p class="sr-hint" id="srCountHint" style="margin:0">' +
+    'If you can, count every bag, box or tin still at the storefront: on the table, in cases under it, and in the car. Count it with the next shift’s adult if they’re there. ' +
+    'This helps leaders see what sold. Leave blank any you didn’t count.</p>') !== -1,
     'the section, its legend and hint, in Keith’s words');
-  ok(/<label class="sr-count-item" for="srLeft-p1"><span>Kettle Corn<\/span><input id="srLeft-p1" name="left:p1" class="count-in" inputmode="numeric" pattern="\[0-9\]\*" autocomplete="off" aria-describedby="srCountHint" value="4"><\/label>/.test(f),
+  ok(/<label class="sr-count-item" for="srLeft-p1"><span>Kettle Corn<\/span><input id="srLeft-p1" name="left:p1" data-name="Kettle Corn" class="count-in" inputmode="numeric" pattern="\[0-9\]\*" autocomplete="off" aria-describedby="srCountHint" value="4"><\/label>/.test(f),
     'a field per product: labelled, numeric keypad, what was typed');
   ok(/<span>Caramel &lt;b&gt;Corn&lt;\/b&gt;<\/span>/.test(f) && /name="left:p2"[^>]*value=""/.test(f), 'escaped, blank to start');
   ok(f.indexOf('srSalesCash"') < f.indexOf('srLeft-p1') && f.indexOf('srLeft-p1') < f.indexOf('srNote"'), 'after the money, before the note');
   ok(!/sr-count/.test(vm.runInContext('parentShiftReportCard', srStatusCtx({ ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '', note: '', attest: false } } }))(
     { events: [srEv(SR_TODAY)] }, SR_TODAY)), 'no products, no section');
-  ok(/aria-invalid="true"/.test(card({ left: { p1: 'x' }, problem: 'bad', problemField: 'left:p1' }).match(/<input id="srLeft-p1"[^>]*>/)[0]), 'a bad count is marked');
+  // F2: a bad count is marked with a border AND words, not colour alone; a wrapped name never pushes its neighbour down.
+  const badForm = card({ left: { p1: 'x' }, problem: 'bad', problemField: 'left:p1' });
+  ok(/aria-invalid="true"/.test(badForm.match(/<input id="srLeft-p1"[^>]*>/)[0]) && /value="x"><span class="small sr-count-bad">Whole number, or blank<\/span><\/label>/.test(badForm), 'a bad count is marked');
+  ok(/input\.count-in\[aria-invalid="true"\] \{ border: 2px solid var\(--bad\); \}/.test(SCRIPT_CSS) && /\.sr-count-grid \{[^}]*align-items: start;/.test(SCRIPT_CSS), 'the style');
+  // F4: the family's status says a count went with it.
+  ok(/ · popcorn left counted<\/span>/.test(srLine(srStatusCtx({ reports: [srReport({ inventory: [{ productId: 'p1', left: 4 }] })] }), srEv(SR_TODAY))) &&
+    !/popcorn left counted/.test(srLine(srStatusCtx({ reports: [srReport()] }), srEv(SR_TODAY))), 'the status after sending');
   // The body: blank is not counted; whole numbers 0..10,000; sent when the form had the fields ([] too on an edit).
   const ctx = vm.createContext({});
   vm.runInContext(['arrOf', 'SHIFT_REPORT_MAX_CENTS', 'SHIFT_REPORT_NOTE_MAX', 'SHIFT_REPORT_SAY', 'shiftReportCents', 'shiftReportNote', 'shiftReportBody', 'srMirror',
@@ -19722,9 +19742,11 @@ test('shift report count: the family’s form has one small optional whole-numbe
   eq(body({ left: { p1: ' 4 ', p2: '0' } }).body.inventory, [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 0 }], 'counted, 0 included');
   eq(body({ left: { p1: '10000' } }).body.inventory, [{ productId: 'p1', left: 10000 }], 'the most');
   for (const v of ['-1', '2.5', 'four', '10001', '1e3']) {
-    const b = body({ left: { p1: v } });
-    eq([b.problem, b.field], ['Count whole containers, like 4. Leave it blank if you didn’t count that one.', 'left:p1'], 'refused: ' + v);
+    const b = body({ left: { p1: v }, leftNames: { p1: 'Kettle Corn' } });
+    eq([b.problem, b.field], ['Enter a whole number for Kettle Corn, like 4, or leave it blank.', 'left:p1'], 'refused, naming the product: ' + v);
   }
+  eq(vm.runInContext("srCountNames({ elements: [{ name: 'left:p1', value: '', dataset: { name: 'Kettle Corn' } }, { name: 'te', value: '1', dataset: {} }] })", ctx).p1, 'Kettle Corn', 'the names');
+  ok(/d\.leftNames = srCountNames\(f\);/.test(slice('shiftReportSubmit')), 'the submit reads them');
   // What was typed is kept for a redraw, and read back from the form's own fields.
   vm.runInContext("ui.shiftReport = { te: '' }; srMirror({ form: { dataset: { form: 'shift-report' } }, name: 'left:p1', value: '7' })", ctx);
   eq(JSON.parse(JSON.stringify(vm.runInContext('ui.shiftReport.left', ctx))), { p1: '7' }, 'srMirror keeps it');
@@ -19735,7 +19757,11 @@ test('shift report count: the family’s form has one small optional whole-numbe
   ok(/left: own \? srCountText\(own\.inventory\) : \{\}/.test(slice('shiftReportAct')), 'editing your own report starts from its count');
   ok(/d\.left = srCountTyped\(f\);/.test(slice('shiftReportSubmit')) && /\/\^left:\/\.test\(made\.field\) \? 'srLeft-' \+ made\.field\.slice\(5\)/.test(slice('shiftReportSubmit')),
     'the submit reads the fields and focuses a bad one');
-  eq(vm.runInContext("SHIFT_REPORT_SAY['inventory-product']", ctx), 'The pack’s popcorn list changed while you had this open. Reload the page and count again.', 'the server’s refusal, in words');
+  eq(vm.runInContext("SHIFT_REPORT_SAY['inventory-product']", ctx), 'The pack’s popcorn list changed while you had this open. Clear the popcorn counts and send your totals, ' +
+    'or reload the page and enter everything again.', 'the server’s refusal, in words (F3)');
+  // F3: that refusal leaves the form open, and with the counts cleared the totals go without one.
+  ok(!/inventory/.test(/\/\^\(([^)]*)\)\$\/\.test\(String\(err && err\.reason\)\)/.exec(slice('shiftReportSubmit'))[1]), 'the refusal closes the form');
+  eq(body({ left: { p1: '', p2: '' }, leftNames: {} }).body.inventory, undefined, 'cleared: sent without a count');
 });
 
 test('shift report count: leaders read it beside what was sent to the storefront, in the season’s record and the CSV, and accepting never touches the inventory', () => {
@@ -19775,11 +19801,15 @@ test('shift report count: leaders read it beside what was sent to the storefront
       inventory: [{ productId: 'p1', left: 3 }], reason: 'Recounted' },
     { at: 4, action: 'shift.amend', byName: 'Kim Admin', was: { teCents: 100, cashCents: 0 }, figures: { teCents: 90, cashCents: 0 }, inventoryUnknown: true, reason: 'x' }])} };`);
   const html = L.run('renderShiftReportDetails(ui.overlay)');
-  ok(/<dt>Popcorn left on the table<\/dt><dd>Kettle Corn: 12 went to this storefront · 4 left · about 8 sold this shift · 2 brought back since; Caramel Corn: 2 left/.test(html), 'the fact');
+  ok(/<dt>Popcorn left at the end of the shift<\/dt><dd><ul class="sr-fact-list"><li>Kettle Corn: 12 went to this storefront · 4 left · about 8 sold this shift · 2 brought back since<\/li><li>Caramel Corn: 2 left/.test(html),
+    'the fact, one product per line (D4)');
+  // Y1 (youth protection): no scout's name in the details, the season's rows or the CSV.
+  ok(!/Ada/.test(html) && !/Ada/.test(JSON.stringify(L.get('shiftReportHistoryRows(2026)'))) && !/Ada/.test(L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026), true)')),
+    'a scout is named in the details, the record or the CSV');
   ok(/Popcorn left: Kettle Corn 5<\/p>/.test(html), 'what was sent');
-  ok(/The figures stayed the same\.<\/p><p class="small" style="margin:2px 0 0">Popcorn left: Kettle Corn 5 → 4, Caramel Corn not counted → 2<\/p>/.test(html), 'the family’s change to the count');
+  ok(/The money totals stayed the same\.<\/p><p class="small" style="margin:2px 0 0">Popcorn left: Kettle Corn 5 → 4, Caramel Corn not counted → 2<\/p>/.test(html), 'the family’s change to the count');
   ok(/Popcorn left: Kettle Corn 3<\/p>/.test(html), 'a change with nothing before it to compare');
-  ok(/The count of popcorn left changed \(too long to keep in the history\)\./.test(html), 'a count too long for the audit');
+  ok(/The popcorn-left count changed\. The history didn’t keep the numbers because the list was too long\./.test(html), 'a count too long for the audit');
   // An admin's correction says what it did to the count.
   eq(L.run("srAmendSay({ at: 0, byName: 'Kim Admin', reason: 'Recounted', was: { teCents: 1, cashCents: 0, inventory: [{ productId: 'p1', left: 4 }] }, now: { teCents: 1, cashCents: 0, inventory: [{ productId: 'p1', left: 5 }] } })"),
     'Edited by Kim Admin: “Recounted”. Popcorn left: Kettle Corn 4 → 5.', 'the block’s line');
@@ -19832,7 +19862,7 @@ atest('shift report count: an admin corrects the count in the edit form, sending
     reports: [srRep({ status: 'accepted', reviewedByName: 'Sam Leader', inventory: [{ productId: 'p1', left: 4 }] })] });
   L.run("leaderShiftReportAct('sr-amend-open', { dataset: { rid: 'rep-1' } })");
   const form = L.run('renderBlockReportLine(state.storefronts[0].blocks[0])');
-  ok(/<legend>Popcorn left on the table<\/legend>/.test(form) && /name="left:p1"[^>]*value="4"/.test(form) && !/left:p2|left:p3|left:bad/.test(form),
+  ok(/<legend>Popcorn left at the end of the shift<\/legend><p class="sr-hint" style="margin:0">Leave blank for any product that wasn’t counted\.<\/p>/.test(form) && /name="left:p1"[^>]*value="4"/.test(form) && !/left:p2|left:p3|left:bad/.test(form),
     'the products sent to this storefront (p2 went to a scout), prefilled with the report’s count');
   L.run("amendShiftReport('rep-1', { te: '123.45', cash: '25', left: { p1: '4', p2: '' }, reason: 'x' })");
   eq([L.get('patches.length'), L.get('toasts').pop()], [0, 'Those are the figures the report already has.'], 'the same count is no change');
