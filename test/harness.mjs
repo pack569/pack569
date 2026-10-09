@@ -35137,6 +35137,33 @@ test('sync final (charges follow-ups): one charge raised on both devices on diff
   ok(/Any other offline edits on it, such as RSVPs or a scout's details, are replaced by\s+the pack's copy that one time\./.test(readFileSync(join(ROOT, 'SETUP.md'), 'utf8')), 'SETUP.md’s note on rule (d)');
 });
 
+test('sign-up requests: an admin sees who is asking to join at the top of Home, with the approve buttons', () => {
+  const run = (role, members, extra) => {
+    const c = vm.createContext({});
+    vm.runInContext(['esc', 'homeJoinRequestsCard'].map(slice).join('\n') +
+      "\nfunction backendConfigured() { return true; }\nfunction isAdmin() { return sync.myRole === 'admin'; }\n" +
+      'var sync = ' + JSON.stringify(Object.assign({ user: { uid: 'me' }, myRole: role, accountsUnavailable: false, members }, extra || {})) + ';', c);
+    return vm.runInContext('homeJoinRequestsCard()', c);
+  };
+  const ms = [{ uid: 'me', role: 'admin', name: 'Keith' }, { uid: 'u1', role: 'pending', name: 'Nora <N>', email: 'nora@example.com' },
+    { uid: 'u2', role: 'pending', email: 'sam@example.com' }, { uid: 'u3', role: 'parent', name: 'Pat' }];
+  const h = run('admin', ms);
+  ok(/Asking to join<\/h2><span class="small muted">2 people<\/span>/.test(h), 'the count');
+  ok(/<span class="acct-name">Nora &lt;N&gt;<\/span>/.test(h) && /<span class="acct-name">sam@example\.com<\/span>/.test(h), 'names escaped; an email stands in for a missing name');
+  ok(!/Pat/.test(h) && !/Keith/.test(h), 'only the pending');
+  ok(/data-act="member-approve" data-uid="u1" data-role="parent">Approve as Parent<\/button>/.test(h) &&
+    /data-uid="u2" data-role="viewer">Viewer</.test(h) && /data-uid="u2" data-role="editor">Editor</.test(h), 'the approve buttons');
+  eq(run('editor', ms), '', 'not an admin: no card');
+  eq(run('admin', ms, { accountsUnavailable: true }), '', 'accounts not set up: no card');
+  eq(run('admin', [ms[0], ms[3]]), '', 'nobody waiting: no card');
+  // Home: the card near the top, and the Committee Chair task steps aside for it.
+  const hm = slice('renderHome');
+  ok(hm.indexOf('homeJoinRequestsCard()') < hm.indexOf('startHereVisible(state)'), 'above Start here');
+  ok(/out\[out\.length - 1\]\.joinAsk = true;/.test(slice('homeTasks')) &&
+    /if \(joinAsks\) tasks = tasks\.filter\(function \(t\) \{ return !t\.joinAsk; \}\);/.test(hm), 'not said twice');
+  ok(/pending\.length \+ \(pending\.length === 1 \? ' person' : ' people'\) \+ ' waiting for access'/.test(slice('homeTasks')), '“people”, not “persons”');
+});
+
 /* ---------------- report ---------------- */
 // The API tests are async; they run here, one at a time, each on its own database.
 for (const [name, fn] of asyncTests) {
