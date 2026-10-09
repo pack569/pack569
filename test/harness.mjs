@@ -88,6 +88,12 @@ function sandbox(names) {
 // Schedule or a shift line without the sync layer. Their own tests are in "shift totals (S-2)".
 const SR_OFF = "function shiftReportToday() { return '2026-09-28'; }\nfunction parentShiftReportStatus() { return ''; }\n" +
   "function parentShiftReportCard() { return ''; }\n";
+// Keith (2026-10-08) — the count of popcorn left on a shift report: the family's form and body,
+// and the leaders' reading of it. Every context that draws or sends a report needs them.
+const SR_COUNT_FAMILY_FNS = ['SHIFT_REPORT_COUNT_HINT', 'SHIFT_REPORT_LEFT_MAX', 'SHIFT_COUNT_ID_RE', 'srCountTyped', 'srCountParse', 'srCountText',
+  'srCountKey', 'parentShiftCountFields'];
+const SR_COUNT_LEADER_FNS = ['srProductName', 'srCountList', 'srSentTo', 'srCountLine', 'SR_COUNT_INFO', 'srCountHtml', 'srCountSay', 'srCountChanges',
+  'srCountText', 'srCountKey', 'srCountParse', 'SHIFT_REPORT_LEFT_MAX', 'SHIFT_COUNT_ID_RE', 'srAmendCountFields', 'srCountTyped'];
 // The reload gate (PACK_FORMAT): what every page context with a pack-record feed or a push needs.
 // By decl (below): PACK_FORMAT is one line, and slice would run on past it.
 const FORMAT_GATE_FNS = ['PACK_FORMAT', 'formatAhead', 'formatStored', 'storedFormatAhead', 'formatHeldHere', 'packFormatAhead', 'packFormatHeld', 'holdNewerFormat',
@@ -15748,12 +15754,13 @@ atest('api shift reports: every change leaves one audit row, in the same batch, 
   await w.act('parent', rid2, { action: 'withdraw' });
   await w.act('viewer', rid, { action: 'return', reviewNote: 'x' });
   eq(w.sql("SELECT uid, action, detail FROM audit WHERE action LIKE 'shift.%' ORDER BY id").map((r) => [r.uid, r.action, JSON.parse(r.detail)]), [
-    ['uid-parent', 'shift.report', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 12345, cashCents: 2500, salesCashCents: 0, needsConfirm: false }],
-    ['uid-parent', 'shift.report.edit', { report: rid, teCents: 200, cashCents: 300, salesCashCents: 0, confirmationCleared: false }],
+    // 2026-10-08: a send, an edit and an admin's correction record the count of popcorn left after them ([]: none).
+    ['uid-parent', 'shift.report', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 12345, cashCents: 2500, salesCashCents: 0, needsConfirm: false, inventory: [] }],
+    ['uid-parent', 'shift.report.edit', { report: rid, teCents: 200, cashCents: 300, salesCashCents: 0, confirmationCleared: false, inventory: [] }],
     ['uid-editor', 'shift.accept', { report: rid, sfId: 'sfPast', blockId: 'b1', teCents: 200, cashCents: 300, salesCashCents: 0, submittedBy: 'uid-parent',
       submittedByName: 'Test parent', reviewerName: 'Test editor', reviewNote: '', collected: true }],
     ['uid-owner', 'shift.return', { report: rid, sfId: 'sfPast', blockId: 'b1', from: 'accepted', reason: 'Wrong block', reviewerName: 'Test owner' }],
-    ['uid-parent', 'shift.report', { report: rid2, sfId: 'sfPast', blockId: 'b1', teCents: 5, cashCents: 6, salesCashCents: 0, needsConfirm: false }],
+    ['uid-parent', 'shift.report', { report: rid2, sfId: 'sfPast', blockId: 'b1', teCents: 5, cashCents: 6, salesCashCents: 0, needsConfirm: false, inventory: [] }],
     ['uid-parent', 'shift.report.withdraw', { report: rid2 }]
   ], 'the audit trail');
   // Treasurer review C9: the leaders-only audit names the adults (sender, reviewer); never the family's own note.
@@ -16063,7 +16070,7 @@ atest('shift report edits: an admin corrects an accepted report with a reason �
   const au = w.sql("SELECT uid, detail FROM audit WHERE action = 'shift.amend'");
   eq([au.length, au[0].uid, JSON.parse(au[0].detail)], [1, 'uid-owner', { report: rid, sfId: 'sfPast', blockId: 'b1', byName: 'Test owner',
     reason: 'Rained out; sold from a wagon, already in Trail’s End as wagon sales', was: { teCents: 12345, cashCents: 2500, salesCashCents: 0 },
-    now: { teCents: 0, cashCents: 2500, salesCashCents: 0 } }], 'the audit');
+    now: { teCents: 0, cashCents: 2500, salesCashCents: 0 }, inventory: [] }], 'the audit');
   // A second edit is kept beside the first, oldest first.
   eq((await amend('owner', { wasTeCents: 0, teCents: 0, cashCents: 0, reason: 'The donations were wagon cash too' })).status, 200, 'a second edit');
   const lead = (await w.reports('viewer')).body.reports.find((r) => r.id === rid);
@@ -16185,6 +16192,128 @@ atest('shift report history: an admin reads one report’s whole story — who s
   const big = (await hist('owner', many)).body;
   eq([big.history.length, big.truncated, big.history[0].reason, big.history[199].reason], [200, true, 'r5', 'r204'], 'capped at the newest 200');
   ok(/canReadShiftReportHistory = \(role\) => role === 'admin';/.test(readFileSync(join(ROOT, 'functions/_lib/rules.js'), 'utf8')), 'admins only, in the rules');
+});
+
+/* ---- The count of popcorn left on the table (Keith, 2026-10-08; migrations/0006) ----
+   Optional, per product the stored view publishes for the storefront; information for the
+   leaders; read like the figures (leaders and the family's own report); never changes the pack. */
+function srCountView(w, products) {
+  const v = JSON.parse(JSON.stringify(w.view));
+  v.events.forEach((ev) => { if (ev.kind === 'storefront' && products) ev.products = products; });
+  w.db.raw.prepare('UPDATE parent_views SET payload = ? WHERE pack_id = ?').run(JSON.stringify(v), API_PACK);
+}
+const SR_PRODUCTS = [{ id: 'p1', name: 'Kettle Corn' }, { id: 'p2', name: 'Caramel Corn' }];
+atest('shift report count: a family may say how many containers were left, per published product, whole numbers, and only leaders and they read it', async () => {
+  const w = await srWorld();
+  srCountView(w, SR_PRODUCTS);
+  const bad = async (inventory, why, what) => eq((await w.report('parent', { blockId: 'b2', inventory })).body.reason, why, what);
+  await bad({ p1: 4 }, 'inventory', 'not a list');
+  await bad([{ productId: 'p1', left: 1 }, { productId: 'p1', left: 2 }], 'inventory', 'a product twice');
+  await bad([{ productId: 'p1', left: 1, price: 5 }], 'inventory', 'another field');
+  await bad([{ productId: 'x'.repeat(33), left: 1 }], 'inventory', 'an id too long');
+  await bad(Array.from({ length: 41 }, (_, i) => ({ productId: 'p' + i, left: 1 })), 'inventory', '41 products');
+  for (const left of [-1, 1.5, 10001, '4', null]) await bad([{ productId: 'p1', left }], 'inventory-left', 'left ' + JSON.stringify(left));
+  await bad([{ productId: 'p9', left: 1 }], 'inventory-product', 'a product the view doesn’t publish for this storefront');
+  eq(w.sql('SELECT count(*) AS n FROM shift_reports')[0].n, 0, 'a refused count stored a report');
+  // Blank, and none at all, are "not counted".
+  for (const [who, blockId, inventory] of [['viewer', 'b3', []], ['editor', 'b4', null], ['admin2', 'b5', undefined]]) {
+    const r = await w.report(who, { blockId, inventory });
+    eq([r.status, r.body.report.inventory], [200, []], 'not counted: ' + JSON.stringify(inventory));
+  }
+  // A count: stored sorted, 0 and 10,000 allowed.
+  const r = await w.report('parent', { blockId: 'b1', inventory: [{ productId: 'p2', left: 10000 }, { productId: 'p1', left: 0 }] });
+  eq([r.status, r.body.report.inventory], [200, [{ productId: 'p1', left: 0 }, { productId: 'p2', left: 10000 }]], 'the count');
+  const rid = r.body.report.id;
+  eq(w.one('SELECT inventory_json FROM shift_reports WHERE id = ?', rid).inventory_json, '[{"productId":"p1","left":0},{"productId":"p2","left":10000}]', 'as stored');
+  // Who reads it: leaders, and the family's own report; another family never.
+  eq((await w.reports('viewer')).body.reports.find((x) => x.id === rid).inventory.length, 2, 'a leader');
+  eq((await w.reports('parent')).body.reports.find((x) => x.id === rid).inventory.length, 2, 'the family');
+  ok(!/productId|10000/.test(JSON.stringify((await w.reports('newbie')).body)), 'another family read the count');
+  // The sender's edit: left out, it stays; given, it replaces; [] clears; still only published products.
+  const edit = (inventory) => w.act('parent', rid, Object.assign({ action: 'edit', teCents: 12345, cashCents: 2500, attest: true }, inventory === undefined ? {} : { inventory }));
+  eq((await edit()).body.report.inventory.length, 2, 'an edit without a count keeps it');
+  eq((await edit([{ productId: 'p1', left: 3 }])).body.report.inventory, [{ productId: 'p1', left: 3 }], 'an edit replaces it');
+  eq((await edit([{ productId: 'p9', left: 3 }])).body.reason, 'inventory-product', 'an edit naming a product not published');
+  eq((await edit([])).body.report.inventory, [], 'an edit clears it');
+  await edit([{ productId: 'p1', left: 4 }, { productId: 'p2', left: 2 }]);
+  // A confirm and an accept leave it alone and never name it.
+  eq((await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true, inventory: [] })).body.reason, 'unknown-field', 'an accept naming a count');
+  eq((await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true })).body.report.inventory,
+    [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 2 }], 'accepting keeps it');
+  // An admin's correction: both or neither of inventory and wasInventory; the count they were shown; kept before and after.
+  const amend = (over) => w.act('owner', rid, Object.assign({ action: 'amend', teCents: 12345, cashCents: 2500, wasTeCents: 12345, wasCashCents: 2500,
+    reason: 'Recounted the trunk' }, over));
+  const shown = [{ productId: 'p2', left: 2 }, { productId: 'p1', left: 4 }];   // any order
+  eq((await amend({ inventory: [{ productId: 'p1', left: 5 }] })).body.reason, 'inventory', 'a count without what was shown');
+  eq((await amend({ wasInventory: shown })).body.reason, 'inventory', 'what was shown without a count');
+  eq((await amend({ inventory: [{ productId: 'p1', left: 5 }], wasInventory: [] })).body.error, 'report-moved', 'a count the report no longer holds');
+  eq((await amend({ inventory: shown, wasInventory: shown })).body.reason, 'no-change', 'the same count');
+  const a = await amend({ inventory: [{ productId: 'p1', left: 5 }, { productId: 'p2', left: 2 }], wasInventory: shown });
+  eq([a.status, a.body.report.inventory, a.body.report.teCents], [200, [{ productId: 'p1', left: 5 }, { productId: 'p2', left: 2 }], 12345], 'only the count corrected');
+  const am = a.body.report.amendments[0];
+  eq([am.was.inventory, am.now.inventory], [[{ productId: 'p1', left: 4 }, { productId: 'p2', left: 2 }], [{ productId: 'p1', left: 5 }, { productId: 'p2', left: 2 }]], 'kept before and after');
+  eq(w.one('SELECT was_inventory_json, inventory_json FROM shift_report_amendments').was_inventory_json, '[{"productId":"p1","left":4},{"productId":"p2","left":2}]', 'the amendment row');
+  // A storefront no longer published: a product the report already counts may be corrected, a new one may not.
+  srCountView(w, null);
+  w.db.raw.prepare('UPDATE parent_views SET payload = ? WHERE pack_id = ?').run(JSON.stringify({ rev: 1, events: [] }), API_PACK);
+  const now = [{ productId: 'p1', left: 5 }, { productId: 'p2', left: 2 }];
+  eq((await amend({ inventory: [{ productId: 'p1', left: 6 }], wasInventory: now })).status, 200, 'a counted product, off the view');
+  eq((await amend({ inventory: [{ productId: 'p1', left: 6 }, { productId: 'p3', left: 1 }], wasInventory: [{ productId: 'p1', left: 6 }] })).body.reason,
+    'inventory-product', 'a new product, off the view');
+  // The family reads its own correction, count and all; nothing of it reaches the parent view.
+  ok(/"left":6/.test(JSON.stringify((await w.reports('parent')).body.reports.find((x) => x.id === rid))), 'the family’s own report');
+  // The history: the count sent, each change of it was → now.
+  const h = (await w.call('owner', 'GET', 'shiftReport', { rid })).body.history;
+  const steps = h.filter((e) => 'inventory' in e).map((e) => [e.action, e.wasInventory === undefined ? 'none' : e.wasInventory, e.inventory]);
+  eq(steps, [
+    ['shift.report', 'none', [{ productId: 'p1', left: 0 }, { productId: 'p2', left: 10000 }]],
+    ['shift.report.edit', [{ productId: 'p1', left: 0 }, { productId: 'p2', left: 10000 }], [{ productId: 'p1', left: 3 }]],
+    ['shift.report.edit', [{ productId: 'p1', left: 3 }], []],
+    ['shift.report.edit', [], [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 2 }]],
+    ['shift.amend', [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 2 }], [{ productId: 'p1', left: 5 }, { productId: 'p2', left: 2 }]],
+    ['shift.amend', [{ productId: 'p1', left: 5 }, { productId: 'p2', left: 2 }], [{ productId: 'p1', left: 6 }]]], 'the count’s history, only where it changed');
+  // A count too long for its audit row is recorded as how many, and the history says it isn't known.
+  const big = Array.from({ length: 40 }, (_, i) => ({ productId: ('p' + i).padEnd(32, 'x'), left: 10000 }));
+  const sendD = API.mod.shiftReports.auditInventory({ report: rid, sfId: 'x'.repeat(64), blockId: 'y'.repeat(64), teCents: 1, cashCents: 1, salesCashCents: 0,
+    needsConfirm: true }, API.rules.inventoryJson(big));
+  eq([sendD.inventory.length, JSON.stringify(sendD).length <= 2000], [40, true], 'the longest count fits a send’s audit row');
+  const d = API.mod.shiftReports.auditInventory({ report: rid, sfId: 'x'.repeat(64), blockId: 'y'.repeat(64), byName: 'n'.repeat(120), reason: 'r'.repeat(300) },
+    API.rules.inventoryJson(big));
+  eq([d.inventory, d.inventoryCounted, d.reason.length], [undefined, 40, 300], 'too long for a correction’s audit row: how many, the rest kept');
+  ok(API.rules.inventoryJson(big).length <= 4000, 'the longest count fits its column');
+  // The tables' own CHECKs.
+  const refused = (sql, ...a) => { try { w.db.raw.prepare(sql).run(...a); return false; } catch (e) { return true; } };
+  for (const v of ['not json', '{"productId":"p1"}', '[' + '1,'.repeat(2000) + '1]']) ok(refused('UPDATE shift_reports SET inventory_json = ? WHERE id = ?', v, rid), 'a count the table holds: ' + v.slice(0, 20));
+  ok(!refused('UPDATE shift_reports SET inventory_json = ? WHERE id = ?', '[]', rid), 'an empty list');
+  const amendRow = (wasInv, inv) => refused('INSERT INTO shift_report_amendments (pack_id, report_id, at, by_uid, by_name, reason, was_te_cents, was_cash_cents, ' +
+    'was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents, was_inventory_json, inventory_json) VALUES (?, ?, 1, ?, ?, ?, 1, 0, 0, 1, 0, 0, ?, ?)',
+    API_PACK, rid, 'uid-owner', 'x', 'why', wasInv, inv);
+  ok(!amendRow('', '[]') && amendRow('[]', '[]') && amendRow('', 'nope'), 'an amendment changes the figures or the count, and a count is a list');
+  // The page's form can name a count: the body limit leaves room for 40 products, twice.
+  ok(/readObject\(request, SHIFT_REPORT_BODY_MAX\)/.test(readFileSync(join(ROOT, 'functions/api/pack/[id]/shift-reports/[rid].js'), 'utf8')) &&
+    API.mod.shiftReports.SHIFT_REPORT_BODY_MAX === 8192, 'the body limit');
+});
+
+atest('shift report count: migration 0006 adds the count, and keeps every correction already made', async () => {
+  await apiSetup();
+  eq(MIGRATION_FILES.indexOf('0006_shift_report_inventory.sql'), 5, 'the migration, after the first five');
+  sqliteMod = sqliteMod || await loadSqlite();
+  const raw = new sqliteMod.DatabaseSync(':memory:');
+  raw.exec('PRAGMA foreign_keys = ON;');
+  const files = MIGRATION_FILES.map((f) => [f, readFileSync(join(ROOT, 'migrations', f), 'utf8')]);
+  files.filter(([f]) => f < '0006').forEach(([, sql]) => raw.exec(sql));
+  raw.prepare("INSERT INTO packs (id, created_at) VALUES ('p', 1)").run();
+  raw.prepare("INSERT INTO shift_report_amendments (pack_id, report_id, at, by_uid, by_name, reason, was_te_cents, was_cash_cents, was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents) " +
+    "VALUES ('p', 'r1', 5, 'u', 'Kim', 'Rained out', 100, 0, 0, 0, 0, 0)").run();
+  raw.exec(files.find(([f]) => f.startsWith('0006'))[1]);
+  eq(Object.assign({}, raw.prepare('SELECT id, report_id, by_name, reason, was_te_cents, te_cents, was_inventory_json, inventory_json FROM shift_report_amendments').get()),
+    { id: 1, report_id: 'r1', by_name: 'Kim', reason: 'Rained out', was_te_cents: 100, te_cents: 0, was_inventory_json: '', inventory_json: '' }, 'a correction already made, kept');
+  ok(raw.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'shift_report_amendments_by_report'").get(), 'the index');
+  raw.prepare("INSERT INTO shift_report_amendments (pack_id, report_id, at, by_uid, reason, was_te_cents, was_cash_cents, was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents) " +
+    "VALUES ('p', 'r1', 6, 'u', 'Again', 0, 0, 0, 5, 0, 0)").run();
+  eq(raw.prepare('SELECT max(id) AS n FROM shift_report_amendments').get().n, 2, 'ids carry on');
+  const sql = files.find(([f]) => f.startsWith('0006'))[1];
+  ok(/ORDER: apply this to the preview database, then production, BEFORE deploying/.test(sql), 'the ORDER note');
 });
 
 atest('api shift reports: SETUP.md Part C describes the rules the server holds', async () => {
@@ -16309,7 +16438,7 @@ const CLIENT_FNS = ['arrOf', 'fixedPackId', 'fixedPackMode', 'syncPass', 'JOIN_D
   'keepLocalNeedsAdmin', 'KEEP_LOCAL_REFUSED', 'canReopenStatement',
   // 2026-10-01 — a family's shift totals: the sync side (the list, the send, the withdraw).
   'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_MAX_CENTS', 'SHIFT_REPORT_NOTE_MAX', 'SHIFT_REPORT_SAY', 'SHIFT_REPORT_SAY_ELSE', 'shiftReportsOn',
-  'shiftReportCents', 'shiftReportNote', 'shiftReportBody', 'shiftReportMessage', 'loadShiftReports', 'shiftReportFor', 'shiftReportAct',
+  'shiftReportCents', 'shiftReportNote', 'shiftReportBody', 'shiftReportMessage', 'loadShiftReports', 'shiftReportFor', 'shiftReportAct', ...SR_COUNT_FAMILY_FNS,
   'shiftReportSubmit', 'arm', 'ARM_WARNED_MS', 'dollars',
   // S-3 — the leaders' side: the accept, its reconcile, the send-back.
   'shiftReportsOffered', 'shiftReportCanSend', 'leaderReportsOn', 'canReviewReports', 'srReports', 'srReport', 'srWaiting', 'srBlockOf',
@@ -17554,7 +17683,7 @@ function srStatusCtx(o) {
        'SHIFT_REPORT_SALES_CASH_HINT', 'srSalesCashFig', 'srIsMyShift', 'SR_MY_SHIFT', 'srParentStore', 'SR_SHOW_ALL', 'SR_SHOW_MINE', 'SR_UNLINKED',
        'SR_NONE_MINE', 'SR_PREVIEW_LINE', 'SR_HOME_HEAD', 'SR_HOME_INTRO', 'srHomeFamilyOn',
        'shiftReportNowHM', 'shiftReportsOffered', 'shiftReportCanSend', 'shiftReportToday', 'SHIFT_REPORT_NOTE_HINT', 'srField', 'shiftReportOpenFor', 'shiftReportsOn', 'shiftReportFor', 'parentShiftReportStatus',
-       'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines', 'parentShiftConfirmForm'].map(decl).join('\n')}`, ctx);
+       'parentShiftReportForm', 'parentShiftReportCard', 'parentShiftLines', 'parentShiftConfirmForm', ...SR_COUNT_FAMILY_FNS].map(decl).join('\n')}`, ctx);
   return ctx;
 }
 const SR_TODAY = '2026-10-03';
@@ -17905,7 +18034,7 @@ function srLeaderCtx(o) {
        'srParentStore', 'srHomeFamilyOn', 'srSameFigures', 'srSameFamily', 'TE_CASH_WINDOW', 'packDayStartMs', 'SHIFT_REPORT_TZ', 'srCashAge', 'srCashAgeLine', 'srCashOrphans', 'srCashNotMine', 'srCashButtons', 'srCashReported', 'srCashEarlier', 'srCashEarlierWords', 'srCashEarlierReturnedSay', 'srCashHistorySay', 'SR_CASH_TO_COLLECT_WHY', 'srCashToCollectLine', 'renderBlockCashToCollect', 'srCashToCollect', 'srCashToCollectSay',
        'srCashEntries', 'srCashOpenCents', 'srCashEntry', 'srCashOutcomeSay', 'srCashRemoveWarn', 'srSalesCashSet', 'SR_CASH_DEPOSIT', 'srCashEarlierSay', 'srCashMirror', 'srCashAct', 'srCashCloseoutSay',
        'srCanAmend', 'srAmendNotMine', 'srAmends', 'srAcceptedFigures', 'srAmendSay', 'srAmendToBlock', 'srAmendMirror', 'renderShiftReportAmendForm', 'amendShiftReport',
-       'srCanSeeDetails', 'srDetailsButton',
+       'srCanSeeDetails', 'srDetailsButton', ...SR_COUNT_LEADER_FNS,
        'shiftReportCents', 'SHIFT_REPORT_MAX_CENTS'].map(decl).join('\n')}
     function todayISO() { return ${JSON.stringify(o.today || '2026-10-01')}; }
     function shiftReportToday() { return todayISO(); }   // the pack's day, here the test's`, ctx);
@@ -19349,10 +19478,10 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
     ['(no longer on the schedule)', '', '', '', '', 'submitted', '', '']], 'the rows: last season’s left out');
   // Youth-protection review 4: by default the CSV holds figures and adults' names, and no written reason.
   const csv = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026))');
-  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Popcorn sales cash not converted,"Collected / converted by, on",Sent by,Verified by,Accepted by,Edited after accepting,Status,Block now differs from report', 'the header');
+  ok(csv.split('\n')[0] === 'Date,Storefront,Shift,Trail’s End,Cash donations,Popcorn sales cash not converted,"Collected / converted by, on",Sent by,Verified by,Accepted by,Edited after accepting,Status,Block now differs from report,Popcorn left (containers)', 'the header');
   ok(/2026-10-03,Kroger,10:00–12:00,123\.45,25\.00,20\.00,"collected by Lee Leader, 2026-10-04",Nora Newfamily,confirmed by Bo Parent,Sam Leader,,accepted,N/.test(csv), 'the cells');
   // An admin's correction: who, when and the figures before, in its own column; the reason only with the reasons.
-  ok(/,Sam Leader,"Kim Admin, 2026-10-05, was \$95\.00 \/ \$0\.00 \/ \$0\.00",accepted,Y\n/.test(csv) && !/wagon/.test(csv), 'the correction in the CSV');
+  ok(/,Sam Leader,"Kim Admin, 2026-10-05, was \$95\.00 \/ \$0\.00 \/ \$0\.00",accepted,Y,\n/.test(csv) && !/wagon/.test(csv), 'the correction in the CSV');
   ok(/12:00–14:00,80\.00,0\.00,0\.00,,/.test(csv), 'S-5: a report with no cash from sales to collect says 0.00, and nobody collected it');
   ok(!/SUM|Recount/.test(csv), 'a leader’s reason in the CSV by default');
   const csvR = L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026), true)');
@@ -19378,7 +19507,7 @@ test('round 1: the season’s shift reports, as a leaders’ table and a CSV, wi
 // Keith (2026-10-08) — one report's details and who changed it, admins only.
 const SR_DETAILS_FNS = ['programYearStartISO', 'programYearEndISO', 'ledgerCsvCell', 'shiftReportHistoryRows', 'SR_HISTORY_HEAD', 'SR_HISTORY_CSV_HEAD',
   'SR_HISTORY_REASONS_HEAD', 'srCashHistorySay', 'srAmendHistorySay', 'shiftReportHistoryCsv', 'srYearLabel', 'srHistoryFileName', 'SR_HISTORY_DONT_SHARE',
-  'renderShiftReportHistory', 'SR_STATUS_WORDS', 'SR_DETAILS_SAY', 'srDetailsMessage', 'srStepFigs', 'srFiguresSay', 'srFigureChanges', 'srStepSay',
+  'renderShiftReportHistory', 'SR_STATUS_WORDS', 'SR_DETAILS_SAY', 'srDetailsMessage', 'srStepFigs', 'srFiguresSay', 'srFigureChanges', 'srStepSay', 'srStepCount',
   'openShiftReportDetails', 'srLoadDetails', 'srDetailsAct', 'renderShiftReportDetails'];
 function srDetailsCtx(o) {
   const L = srLeaderCtx(Object.assign({ role: 'admin', uid: 'uid-kim', name: 'Kim Admin', state: Object.assign(srAmendSt(), { packName: 'Pack 569', budget: { programYear: 2026 } }),
@@ -19481,6 +19610,150 @@ atest('shift report details: an admin opens a report’s details from the block 
   ok(/'sr-details-open', 'sr-details-retry', 'sr-details-back'/.test(slice('HELD_ACTS')), 'held while it only reads');
   ok(/shiftReportDetails: function \(docId, rid\) \{\n\s+return this\.call\('GET', this\.packPath\(docId, '\/shift-reports\/' \+ encodeURIComponent\(rid\)\)\);/.test(slice('apiBackend')), 'the backend call');
   ok(!/srStepSay|shiftReportDetails|sr-details/.test(codeOnly(BPV())), 'buildParentView publishes any of it');
+});
+
+/* ---- The count of popcorn left on the table, on the page (Keith, 2026-10-08) ---- */
+const SR_COUNT_INV = { products: [{ id: 'p1', name: ' Kettle  Corn ', perCase: 8, cases: 4, loose: 1, unitPriceCents: 2000 }, { id: 'p2', name: 'Caramel Corn', perCase: 8, cases: 2, loose: 0, unitPriceCents: 1500 },
+  { id: 'p3', name: '', perCase: 6, cases: 1, loose: 0, unitPriceCents: 999 }, { id: 'bad id!', name: 'Odd', perCase: 1, cases: 1, loose: 0, unitPriceCents: 1 }],
+  distributions: [{ id: 'd1', productId: 'p1', containers: 12, target: { kind: 'storefront', id: 'sf1' } }, { id: 'd2', productId: 'p1', containers: -2, target: { kind: 'storefront', id: 'sf1' } },
+    { id: 'd3', productId: 'p2', containers: 5, target: { kind: 'scout', id: 's1' } }], orderTotalCents: 98765, commissionPct: '' };
+test('shift report count: the parent view lists each product’s id and name for the count, and nothing else of the Inventory, with standings and without', () => {
+  const ctx = pvCtx(SR_STANDINGS_STUBS + `state.inventory = ${JSON.stringify(SR_COUNT_INV)};`);
+  for (const showStandings of [true, false]) {
+    const pv = vm.runInContext(`buildParentView(state, { showStandings: ${showStandings} })`, ctx);
+    const sf = pv.events.find((e) => e.kind === 'storefront');
+    eq(sf.products, [{ id: 'p1', name: 'Kettle Corn' }, { id: 'p2', name: 'Caramel Corn' }], 'named products, id and name only, standings ' + showStandings);
+    const text = JSON.stringify(pv);
+    ok(!/perCase|unitPrice|98765|2000|"cases"|distributions|containers|Odd/.test(text), 'something else of the Inventory reached the view: ' + text.slice(0, 200));
+  }
+  // None named: no list at all, and the form has no count section.
+  const none = pvCtx(SR_STANDINGS_STUBS + "state.inventory = { products: [{ id: 'p3', name: '  ' }], distributions: [] };");
+  ok(!('products' in vm.runInContext('buildParentView(state, { showStandings: true })', none).events.find((e) => e.kind === 'storefront')), 'a list with no named product');
+  const noInv = pvCtx(SR_STANDINGS_STUBS + 'delete state.inventory;');
+  ok(!('products' in vm.runInContext('buildParentView(state, { showStandings: true })', noInv).events.find((e) => e.kind === 'storefront')), 'a record with no inventory');
+  // The banner and SETUP.md say so.
+  ok(/each product's `id` and `name`\s+\/\/\s+as `products`/.test(SCRIPT) && /a product's id and name\s+\/\/\s+only, above/.test(SCRIPT), 'the banner');
+  ok(/each product's\s+name and id \(`products`; nothing else from the Inventory\)/.test(SETUP) && /only each product's name and id, for the count/.test(SETUP), 'SETUP.md');
+});
+
+atest('shift report count: a view built by the real buildParentView carries the products the server checks a count against', async () => {
+  await apiSetup();
+  const today = API.rules.packToday();
+  const yesterday = new Date(Date.parse(today + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+  const py = +yesterday.slice(0, 4) - (+yesterday.slice(5, 7) < 7 ? 1 : 0);
+  const ctx = pvCtx(SR_STANDINGS_STUBS + `state.storefronts[0].date = '${yesterday}'; state.budget.programYear = ${py}; state.inventory = ${JSON.stringify(SR_COUNT_INV)};`);
+  const view = vm.runInContext('buildParentView(state, { showStandings: false })', ctx);
+  const w = await (await apiWorld()).seed();
+  eq((await w.call('editor', 'PUT', 'view', null, { body: view })).status, 200, 'the view, with its products, is one the server stores');
+  const send = (inventory, blockId) => w.call('parent', 'POST', 'shiftReports', null, { body: { sfId: 'sf1', blockId: blockId || 'b2', teCents: 5000, cashCents: 0, attest: true, inventory } });
+  eq((await send([{ productId: 'p3', left: 1 }])).body.reason, 'inventory-product', 'a product with no name is not offered, so not taken');
+  const r = await send([{ productId: 'p1', left: 4 }, { productId: 'p2', left: 0 }]);
+  eq([r.status, r.body.report.inventory], [200, [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 0 }]], 'a family counts what the view lists');
+});
+
+test('shift report count: the family’s form has one small optional whole-number field per product, kept as typed, and sends only what was counted', () => {
+  const ev = Object.assign(srEv(SR_TODAY), { products: [{ id: 'p1', name: 'Kettle Corn' }, { id: 'p2', name: 'Caramel <b>Corn</b>' }] });
+  const card = (d) => vm.runInContext('parentShiftReportCard', srStatusCtx({ ui: { shiftReport: Object.assign({ sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '', note: '', attest: false }, d) } }))(
+    { events: [ev] }, SR_TODAY);
+  const f = card({ left: { p1: '4' } });
+  ok(/<fieldset class="sr-count"><legend>Popcorn left on the table \(optional\)<\/legend><p class="sr-hint" id="srCountHint" style="margin:0">Count the containers still on the table at the end of the shift\. Leave blank if you didn’t count\.<\/p>/.test(f),
+    'the section, its legend and hint, in Keith’s words');
+  ok(/<label class="sr-count-item" for="srLeft-p1"><span>Kettle Corn<\/span><input id="srLeft-p1" name="left:p1" class="count-in" inputmode="numeric" pattern="\[0-9\]\*" autocomplete="off" aria-describedby="srCountHint" value="4"><\/label>/.test(f),
+    'a field per product: labelled, numeric keypad, what was typed');
+  ok(/<span>Caramel &lt;b&gt;Corn&lt;\/b&gt;<\/span>/.test(f) && /name="left:p2"[^>]*value=""/.test(f), 'escaped, blank to start');
+  ok(f.indexOf('srSalesCash"') < f.indexOf('srLeft-p1') && f.indexOf('srLeft-p1') < f.indexOf('srNote"'), 'after the money, before the note');
+  ok(!/sr-count/.test(vm.runInContext('parentShiftReportCard', srStatusCtx({ ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '', note: '', attest: false } } }))(
+    { events: [srEv(SR_TODAY)] }, SR_TODAY)), 'no products, no section');
+  ok(/aria-invalid="true"/.test(card({ left: { p1: 'x' }, problem: 'bad', problemField: 'left:p1' }).match(/<input id="srLeft-p1"[^>]*>/)[0]), 'a bad count is marked');
+  // The body: blank is not counted; whole numbers 0..10,000; sent when the form had the fields ([] too on an edit).
+  const ctx = vm.createContext({});
+  vm.runInContext(['arrOf', 'SHIFT_REPORT_MAX_CENTS', 'SHIFT_REPORT_NOTE_MAX', 'SHIFT_REPORT_SAY', 'shiftReportCents', 'shiftReportNote', 'shiftReportBody', 'srMirror',
+    ...SR_COUNT_FAMILY_FNS].map(decl).join('\n') + '\nvar ui = {};', ctx);
+  const body = (over) => JSON.parse(JSON.stringify(vm.runInContext('shiftReportBody', ctx)(Object.assign({ sfId: 'sf1', blockId: 'b1', rid: '', te: '10', cash: '0', note: '', attest: true }, over))));
+  eq(body({}).body.inventory, undefined, 'a form with no count fields sends none');
+  eq(body({ left: { p1: '', p2: ' ' } }).body.inventory, undefined, 'a new report with nothing counted sends none');
+  eq(body({ left: { p1: '', p2: '' }, rid: 'r1' }).body.inventory, [], 'an edit with nothing counted clears it');
+  eq(body({ left: { p1: ' 4 ', p2: '0' } }).body.inventory, [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 0 }], 'counted, 0 included');
+  eq(body({ left: { p1: '10000' } }).body.inventory, [{ productId: 'p1', left: 10000 }], 'the most');
+  for (const v of ['-1', '2.5', 'four', '10001', '1e3']) {
+    const b = body({ left: { p1: v } });
+    eq([b.problem, b.field], ['Count whole containers, like 4. Leave it blank if you didn’t count that one.', 'left:p1'], 'refused: ' + v);
+  }
+  // What was typed is kept for a redraw, and read back from the form's own fields.
+  vm.runInContext("ui.shiftReport = { te: '' }; srMirror({ form: { dataset: { form: 'shift-report' } }, name: 'left:p1', value: '7' })", ctx);
+  eq(JSON.parse(JSON.stringify(vm.runInContext('ui.shiftReport.left', ctx))), { p1: '7' }, 'srMirror keeps it');
+  eq(JSON.parse(JSON.stringify(vm.runInContext("srCountTyped({ elements: [{ name: 'te', value: '1' }, { name: 'left:p1', value: '3' }, { name: 'left:p2', value: '' }] })", ctx))),
+    { p1: '3', p2: '' }, 'read from the form');
+  eq(vm.runInContext("srCountTyped({ elements: [{ name: 'te', value: '1' }] })", ctx), null, 'a form with none');
+  // Opening their own report fills it in; a bad count is where the focus goes.
+  ok(/left: own \? srCountText\(own\.inventory\) : \{\}/.test(slice('shiftReportAct')), 'editing your own report starts from its count');
+  ok(/d\.left = srCountTyped\(f\);/.test(slice('shiftReportSubmit')) && /\/\^left:\/\.test\(made\.field\) \? 'srLeft-' \+ made\.field\.slice\(5\)/.test(slice('shiftReportSubmit')),
+    'the submit reads the fields and focuses a bad one');
+  eq(vm.runInContext("SHIFT_REPORT_SAY['inventory-product']", ctx), 'The pack’s popcorn list changed while you had this open. Reload the page and count again.', 'the server’s refusal, in words');
+});
+
+test('shift report count: leaders read it beside what was sent to the storefront, in the season’s record and the CSV, and accepting never touches the inventory', () => {
+  const st = { packName: 'Pack 569', budget: { programYear: 2026 }, scouts: [{ id: 's1', name: 'Ada Example' }], leaders: [], inventory: SR_COUNT_INV,
+    storefronts: [{ id: 'sf1', name: 'Kroger', date: '2026-10-03', blocks: [{ id: 'b1', label: 'Block 1', start: '10:00', end: '12:00', assignments: [{ scoutId: 's1', weight: 1 }],
+      salesCents: 0, donationsCents: 0, cashCountedBy: '', cashVerifiedBy: '' }] }] };
+  const count = [{ productId: 'p2', left: 2 }, { productId: 'p1', left: 4 }, { productId: 'gone', left: 1 }];
+  const L = srLeaderCtx({ role: 'admin', uid: 'uid-kim', name: 'Kim Admin', state: st, reports: [srRep({ inventory: count })] });
+  const card = L.run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))");
+  ok(/<strong>Popcorn left on the table<\/strong>, counted by the family<\/p><ul class="small"><li>Kettle Corn: sent 10 · left 4 · so about 6 sold<\/li><li>Caramel Corn: left 2<\/li><li>A product no longer on the list: left 1<\/li><\/ul>/.test(card),
+    'per product, in the Inventory’s order, with what was sent there (net of returns): ' + card.slice(card.indexOf('Popcorn left'), card.indexOf('Popcorn left') + 400));
+  ok(/For information only\. Accepting doesn’t change the pack’s inventory\./.test(card), 'said plainly');
+  ok(!/Popcorn left/.test(srLeaderCtx({ state: st, reports: [srRep()] }).run("renderShiftReportCard(srReport('rep-1'), srBlockOf(srReport('rep-1')))")), 'no count, no section');
+  eq(L.run("srCountLine('sf1', { productId: 'p1', left: 12 })"), 'Kettle Corn: sent 10 · left 12 (more than was sent here)', 'more left than was sent');
+  // Accepting writes the block, and nothing of the inventory.
+  const before = JSON.stringify(L.get('state.inventory'));
+  L.run("acceptShiftReport('rep-1', { collected: true })");
+  eq([L.block('b1').salesCents, JSON.stringify(L.get('state.inventory'))], [12345, before], 'the accept left the inventory alone');
+  for (const f of ['acceptShiftReport', 'srSettle', 'srRollback', 'shiftReportsReconcile', 'srAmendToBlock', 'srAmendMirror', 'amendShiftReport', 'srTakeOver'])
+    ok(!/state\.inventory/.test(codeOnly(slice(f))), f + ' touches the inventory');
+  // The season's record and the CSV: a compact cell.
+  vm.runInContext(SR_DETAILS_FNS.map(decl).join('\n'), L.ctx);
+  eq(L.get('shiftReportHistoryRows(2026)')[0].left, 'Kettle Corn 4, Caramel Corn 2, A product no longer on the list 1', 'the row');
+  ok(/,"Kettle Corn 4, Caramel Corn 2, A product no longer on the list 1"\n/.test(L.run('shiftReportHistoryCsv(shiftReportHistoryRows(2026))')), 'the CSV cell');
+  ok(/<th scope="col">Popcorn left \(containers\)<\/th>/.test(L.run('renderShiftReportHistory()')), 'the table');
+  // The details, and its timeline: each change of the count, was → now.
+  L.run(`ui.overlay = { kind: 'sr-details', rid: 'rep-1', loading: false, error: '', report: null, truncated: false, history: ${JSON.stringify([
+    { at: 1, action: 'shift.report', byName: 'Nora Newfamily', figures: { teCents: 100, cashCents: 0 }, inventory: [{ productId: 'p1', left: 5 }] },
+    { at: 2, action: 'shift.report.edit', byName: 'Nora Newfamily', was: { teCents: 100, cashCents: 0 }, figures: { teCents: 100, cashCents: 0 },
+      wasInventory: [{ productId: 'p1', left: 5 }], inventory: [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 2 }] },
+    { at: 3, action: 'shift.amend', byName: 'Kim Admin', was: { teCents: 100, cashCents: 0 }, figures: { teCents: 100, cashCents: 0 }, wasInventory: null,
+      inventory: [{ productId: 'p1', left: 3 }], reason: 'Recounted' },
+    { at: 4, action: 'shift.amend', byName: 'Kim Admin', was: { teCents: 100, cashCents: 0 }, figures: { teCents: 90, cashCents: 0 }, inventoryUnknown: true, reason: 'x' }])} };`);
+  const html = L.run('renderShiftReportDetails(ui.overlay)');
+  ok(/<dt>Popcorn left on the table<\/dt><dd>Kettle Corn: sent 10 · left 4 · so about 6 sold; Caramel Corn: left 2; A product no longer on the list: left 1<\/dd>/.test(html), 'the fact');
+  ok(/Popcorn left: Kettle Corn 5<\/p>/.test(html), 'what was sent');
+  ok(/The figures stayed the same\.<\/p><p class="small" style="margin:2px 0 0">Popcorn left: Kettle Corn 5 → 4, Caramel Corn not counted → 2<\/p>/.test(html), 'the family’s change to the count');
+  ok(/Popcorn left: Kettle Corn 3<\/p>/.test(html), 'a change with nothing before it to compare');
+  ok(/The count of popcorn left changed \(too long to keep in the history\)\./.test(html), 'a count too long for the audit');
+  // An admin's correction says what it did to the count.
+  eq(L.run("srAmendSay({ at: 0, byName: 'Kim Admin', reason: 'Recounted', was: { teCents: 1, cashCents: 0, inventory: [{ productId: 'p1', left: 4 }] }, now: { teCents: 1, cashCents: 0, inventory: [{ productId: 'p1', left: 5 }] } })"),
+    'Edited by Kim Admin: “Recounted”. Popcorn left: Kettle Corn 4 → 5.', 'the block’s line');
+});
+
+atest('shift report count: an admin corrects the count in the edit form, sending it only when it changed, with the count they were shown', async () => {
+  const st = Object.assign(srAmendSt(), { inventory: SR_COUNT_INV });
+  const L = srLeaderCtx({ role: 'admin', uid: 'uid-kim', name: 'Kim Admin', state: st,
+    reports: [srRep({ status: 'accepted', reviewedByName: 'Sam Leader', inventory: [{ productId: 'p1', left: 4 }] })] });
+  L.run("leaderShiftReportAct('sr-amend-open', { dataset: { rid: 'rep-1' } })");
+  const form = L.run('renderBlockReportLine(state.storefronts[0].blocks[0])');
+  ok(/<legend>Popcorn left on the table<\/legend>/.test(form) && /name="left:p1"[^>]*value="4"/.test(form) && /name="left:p2"[^>]*value=""/.test(form) && !/left:p3|left:bad/.test(form),
+    'the named products, prefilled with the report’s count');
+  L.run("amendShiftReport('rep-1', { te: '123.45', cash: '25', left: { p1: '4', p2: '' }, reason: 'x' })");
+  eq([L.get('patches.length'), L.get('toasts').pop()], [0, 'Those are the figures the report already has.'], 'the same count is no change');
+  L.run("amendShiftReport('rep-1', { te: '123.45', cash: '25', left: { p1: 'lots' }, reason: 'x' })");
+  eq(L.get('toasts').pop(), 'Count whole containers, like 4, up to 10,000. Leave it blank if it wasn’t counted.', 'a bad count');
+  L.run("amendShiftReport('rep-1', { te: '123.45', cash: '25', left: { p1: '3', p2: '1' }, reason: 'Recounted the trunk' })");
+  eq(L.get('patches')[0].body, { action: 'amend', teCents: 12345, cashCents: 2500, salesCashCents: 0, wasTeCents: 12345, wasCashCents: 2500, wasSalesCashCents: 0,
+    reason: 'Recounted the trunk', inventory: [{ productId: 'p1', left: 3 }, { productId: 'p2', left: 1 }], wasInventory: [{ productId: 'p1', left: 4 }] }, 'only the count changed');
+  await L.answer(0, { code: 'invalid-argument', reason: 'inventory-product' });
+  ok(L.get('toasts').indexOf('One of those products isn’t on the list families see for this storefront yet. Wait a moment for the pack to save, then try again.') !== -1, 'refused, in words');
+  L.run("amendShiftReport('rep-1', { te: '100', cash: '25', left: { p1: '4' }, reason: 'Figures only' })");
+  ok(!('inventory' in L.get('patches')[1].body), 'a figures-only correction leaves the count out');
+  ok(/left: srCountTyped\(f\) \|\| undefined/.test(SCRIPT), 'the form’s submit reads the count');
 });
 
 test('my shifts: the family’s card lists only their own family’s shifts, marked, and the toggle shows the rest in order', () => {
@@ -20187,7 +20460,8 @@ test('parent-experience review 1: focus and the caret come back after a redraw, 
   ok(/var srKeep = srFocusSave\(\);/.test(r) && r.indexOf('srFocusRestore(srKeep);') > r.indexOf('var restored = findBySignature(sig);'), 'render does not keep the place');
   // Where focus is moved on purpose.
   ok(/ui\.srFocusId = 'srConfirmAttest';   \/\/ review 4/.test(slice('shiftReportAct')) && /ui\.srFocusId = 'srTe';/.test(slice('shiftReportAct')), 'opening a form');
-  ok(/ui\.srFocusId = \(\{ te: 'srTe', cash: 'srCash', salesCash: 'srSalesCash', note: 'srNote', attest: 'srAttest' \}\)\[made\.field\]/.test(slice('shiftReportSubmit')) &&
+  // 2026-10-08: a bad count of popcorn left goes to its own field (srLeft-<product>).
+  ok(/ui\.srFocusId = \/\^left:\/\.test\(made\.field\) \? 'srLeft-' \+ made\.field\.slice\(5\)\s+: \(\{ te: 'srTe', cash: 'srCash', salesCash: 'srSalesCash', note: 'srNote', attest: 'srAttest' \}\)\[made\.field\]/.test(slice('shiftReportSubmit')) &&
     /ui\.srFocusId = 'srCardHead';/.test(slice('shiftReportSubmit')) && /ui\.srFocusId = 'srCardHead';/.test(slice('shiftConfirmSubmit')), 'a problem, or done');
 });
 

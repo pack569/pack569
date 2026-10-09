@@ -363,3 +363,56 @@ export function shiftReportProblem(body, view, today) {
   if (ago > SHIFT_REPORT_DAYS) return 'too-old';
   return null;
 }
+
+// ---- The end-of-shift count (Keith, 2026-10-08; migrations/0006_shift_report_inventory.sql) ----
+// A family may say how many CONTAINERS of each product were still on the table when the shift
+// ended. OPTIONAL: a product left out was not counted, and no count at all is the report as it
+// always was. It is information for the leaders only: nothing on the server or the page changes
+// the pack's inventory from it. A count is a list of { productId, left }: at most
+// SHIFT_INVENTORY_MAX products, each once, each one the stored parent view publishes for that
+// storefront (`allowed`, below), `left` a whole number 0 to SHIFT_INVENTORY_LEFT_MAX.
+export const SHIFT_INVENTORY_MAX = 40;
+export const SHIFT_INVENTORY_LEFT_MAX = 10000;
+// A product's id as the count names it: the page's uid() is 13 or 14 characters; this leaves room,
+// and keeps 40 of them inside the column's CHECK (4000 characters).
+export const SHIFT_INVENTORY_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
+// The products a published storefront event offers for the count (buildParentView's
+// ev.products: { id, name }), as { id: true }. None, for an event with none or no event.
+export function viewProductIds(ev) {
+  const out = Object.create(null);
+  (ev && Array.isArray(ev.products) ? ev.products : []).forEach((p) => {
+    if (p && typeof p.id === 'string' && SHIFT_INVENTORY_ID_RE.test(p.id)) out[p.id] = true;
+  });
+  return out;
+}
+// Why this count may not be stored, or null. `inv` is the body's (undefined or null: none).
+// `allowed` is { productId: true } (viewProductIds); every product counted must be in it.
+export function shiftInventoryProblem(inv, allowed) {
+  if (inv === undefined || inv === null) return null;
+  if (!Array.isArray(inv) || inv.length > SHIFT_INVENTORY_MAX) return 'inventory';
+  const seen = Object.create(null);
+  for (const x of inv) {
+    if (!x || typeof x !== 'object' || Array.isArray(x)) return 'inventory';
+    for (const k of Object.keys(x)) if (k !== 'productId' && k !== 'left') return 'inventory';
+    if (typeof x.productId !== 'string' || !SHIFT_INVENTORY_ID_RE.test(x.productId) || seen[x.productId]) return 'inventory';
+    seen[x.productId] = true;
+    if (typeof x.left !== 'number' || !Number.isInteger(x.left) || x.left < 0 || x.left > SHIFT_INVENTORY_LEFT_MAX) return 'inventory-left';
+    if (!allowed || allowed[x.productId] !== true) return 'inventory-product';
+  }
+  return null;
+}
+// A count as the table stores it: '' for none, or the JSON of { productId, left } sorted by
+// productId, so the same count is always the same text (an admin's "nothing changed" is equality).
+export function inventoryJson(inv) {
+  if (!Array.isArray(inv) || !inv.length) return '';
+  return JSON.stringify(inv.map((x) => ({ productId: x.productId, left: x.left }))
+    .sort((a, b) => (a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0)));
+}
+// The stored text back as a list ([] for none, or anything that isn't one).
+export function inventoryList(text) {
+  if (typeof text !== 'string' || !text) return [];
+  let v = null;
+  try { v = JSON.parse(text); } catch (e) { return []; }
+  return Array.isArray(v) ? v.filter((x) => x && typeof x.productId === 'string' && Number.isInteger(x.left))
+    .map((x) => ({ productId: x.productId, left: x.left })) : [];
+}
