@@ -86,11 +86,12 @@ export const firstName = (n) => {
 // 2026-10-08 (migrations/0006): and the count of popcorn left, before and after, when it changed.
 const AMEND_COLS = 'report_id, at, by_uid, by_name, reason, was_te_cents, was_cash_cents, was_sales_cash_cents, te_cents, cash_cents, sales_cash_cents, ' +
   'was_inventory_json, inventory_json';
-function amendOut(a, full) {
+// `count`: whether the caller may read the count of popcorn left (a leader, or the family's own report).
+function amendOut(a, full, count) {
   const o = { at: a.at, byName: full ? (a.by_name || null) : firstName(a.by_name), reason: a.reason,
     was: { teCents: a.was_te_cents, cashCents: a.was_cash_cents, salesCashCents: a.was_sales_cash_cents },
     now: { teCents: a.te_cents, cashCents: a.cash_cents, salesCashCents: a.sales_cash_cents } };
-  if (a.was_inventory_json !== a.inventory_json) { o.was.inventory = inventoryList(a.was_inventory_json); o.now.inventory = inventoryList(a.inventory_json); }
+  if (count && a.was_inventory_json !== a.inventory_json) { o.was.inventory = inventoryList(a.was_inventory_json); o.now.inventory = inventoryList(a.inventory_json); }
   if (full) o.byUid = a.by_uid;
   return o;
 }
@@ -104,9 +105,15 @@ export async function readAmendments(db, packId, inSql, args) {
   return by;
 }
 export const readReportAmendments = (db, packId, id) => readAmendments(db, packId, '?', [id]).then((by) => by[id] || []);
+// Review round 1 (security S1, 2026-10-08): a report can also reach a caller who is neither a
+// leader nor its sender: the second parent's 'confirm' is answered with the report. They get the
+// sender's FIRST name only (as the confirm list gives it), and never the count of popcorn left,
+// which is the leaders' and the sending family's alone.
 export function reportOut(row, uid, full, amends) {
+  const own = row.submitted_by_uid === uid, count = full || own;
   const r = { id: row.id, sfId: row.sf_id, blockId: row.block_id, teCents: row.te_cents, cashCents: row.cash_cents,
-    salesCashCents: row.sales_cash_cents || 0, note: row.note, status: row.status, mine: row.submitted_by_uid === uid, submittedByName: row.submitted_by_name,
+    salesCashCents: row.sales_cash_cents || 0, note: row.note, status: row.status, mine: own,
+    submittedByName: full || own ? row.submitted_by_name : firstName(row.submitted_by_name),
     submittedAt: row.submitted_at, updatedAt: row.updated_at,
     reviewedByName: full ? (row.reviewed_by_name || null) : firstName(row.reviewed_by_name),
     // A leader's note reaches a family only as the reason it was sent back (security review 3): an
@@ -117,8 +124,8 @@ export function reportOut(row, uid, full, amends) {
     confirmedByName: full ? (row.confirmed_by_name || null) : firstName(row.confirmed_by_name),
     confirmedAt: row.confirmed_at || null, overridden: row.overridden === 1,
     // 2026-10-08: the count of popcorn left on the table ([] when nothing was counted).
-    inventory: inventoryList(row.inventory_json),
-    amendments: (amends || []).map((a) => amendOut(a, full)) };
+    amendments: (amends || []).map((a) => amendOut(a, full, count)) };
+  if (count) r.inventory = inventoryList(row.inventory_json);
   if (full) {
     r.submittedByUid = row.submitted_by_uid; r.reviewedByUid = row.reviewed_by_uid || null; r.confirmedByUid = row.confirmed_by_uid || null;
     // The accept, as it was made (written once): who, when, why if overridden, and whether the

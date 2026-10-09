@@ -92,7 +92,7 @@ import { route, json, readObject, refuse, forbidden, notFound, badRequest, repor
 import { withMember, auditIf } from '../../../../_lib/pack.js';
 import { canSubmitShiftReport, canReviewShiftReport, canAmendShiftReport, canReadAllShiftReports, canReadShiftReportHistory, shiftReportFiguresProblem, cleanReportNote, reportSalesCash,
   SHIFT_REPORT_NOTE_MAX, shiftConfirmers, sameFamily, canConfirmShiftReport, shiftOfView, daysBetween, packToday, SHIFT_REPORT_DAYS,
-  shiftInventoryProblem, viewProductIds, inventoryJson, inventoryList } from '../../../../_lib/rules.js';
+  shiftInventoryProblem, SHAPE_ONLY, viewProductIds, inventoryJson, inventoryList } from '../../../../_lib/rules.js';
 import { reportOut, readReport, readReportAmendments, readPackRecord, readPackForFamily, STILL_MEMBER, SUBMIT_ROLES, SHIFT_REPORT_BODY_MAX,
   auditInventory } from './index.js';
 
@@ -313,8 +313,7 @@ async function patch({ request, db, packId, role, user, member, params }) {
     if ((b.inventory === undefined) !== (b.wasInventory === undefined)) refuse(badRequest('inventory'));
     if (b.inventory !== undefined) {
       // What the admin was shown: a count of the right shape, whatever products it names.
-      const shownWhy = shiftInventoryProblem(b.wasInventory, null);
-      if (shownWhy && shownWhy !== 'inventory-product') refuse(badRequest('inventory'));
+      if (shiftInventoryProblem(b.wasInventory, SHAPE_ONLY)) refuse(badRequest('inventory'));
       const invWhy = shiftInventoryProblem(b.inventory, await allowedProducts(db, packId, row, true));
       if (invWhy) refuse(badRequest(invWhy));
       if (inventoryJson(b.wasInventory) !== wasInv) return reportMoved(row.status);

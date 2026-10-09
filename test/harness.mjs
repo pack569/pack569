@@ -16316,6 +16316,42 @@ atest('shift report count: migration 0006 adds the count, and keeps every correc
   ok(/ORDER: apply this to the preview database, then production, BEFORE deploying/.test(sql), 'the ORDER note');
 });
 
+// Review round 1 (security S1): the second parent's confirm is answered with the report, and they
+// are another family: no count of popcorn left, and the sender's first name only.
+atest('shift report count: the parent who confirms reads neither the count nor the sender’s full name in the reply', async () => {
+  const w = await s4World();
+  w.view.events[0].products = SR_PRODUCTS;
+  w.db.raw.prepare('UPDATE parent_views SET payload = ? WHERE pack_id = ?').run(JSON.stringify(w.view), API_PACK);
+  const sent = await w.send('parent', 'b1', { inventory: [{ productId: 'p1', left: 4 }] });
+  eq([sent.status, sent.body.report.inventory, sent.body.report.submittedByName], [200, [{ productId: 'p1', left: 4 }], 'Test parent'], 'the sender’s own reply');
+  const c = await w.confirm('newbie', sent.body.report.id);
+  eq(c.status, 200, 'confirmed');
+  ok(!('inventory' in c.body.report) && !/productId/.test(JSON.stringify(c.body)), 'the count reached the confirming parent: ' + JSON.stringify(c.body.report));
+  eq([c.body.report.submittedByName, c.body.report.mine], ['Test', false], 'the sender’s first name only');
+  // A leader's answer is unchanged.
+  eq((await w.call('viewer', 'GET', 'shiftReports')).body.reports[0].submittedByName, 'Test parent', 'a leader');
+});
+
+// Review round 1 (security S2): what an admin was shown is checked element by element, so a bad
+// element anywhere is a 400, never a 500.
+atest('shift report count: a malformed count in an admin’s “was shown” is a 400 wherever the bad element is', async () => {
+  const w = await srWorld();
+  srCountView(w, SR_PRODUCTS);
+  const rid = (await w.report('parent', { blockId: 'b1', inventory: [{ productId: 'p1', left: 4 }] })).body.report.id;
+  await w.act('editor', rid, { action: 'accept', teCents: 12345, cashCents: 2500, collected: true });
+  const amend = (wasInventory) => w.act('owner', rid, { action: 'amend', teCents: 12345, cashCents: 2500, wasTeCents: 12345, wasCashCents: 2500,
+    reason: 'Recount', inventory: [{ productId: 'p1', left: 5 }], wasInventory });
+  for (const bad of [[{ productId: 'p1', left: 4 }, null], [{ productId: 'p1', left: 4 }, 7], [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 'x' }],
+    [{ productId: 'p1', left: 4 }, { productId: 'p1', left: 4 }], 'p1', { productId: 'p1' }]) {
+    const r = await amend(bad);
+    eq([r.status, r.body.reason], [400, 'inventory'], 'was shown: ' + JSON.stringify(bad));
+  }
+  // Shape only: a product no longer listed is fine in what was shown (it decides only report-moved).
+  eq((await amend([{ productId: 'p9', left: 4 }])).body.error, 'report-moved', 'a product not in the view, in what was shown');
+  eq((await amend([{ productId: 'p1', left: 4 }])).status, 200, 'the count as shown');
+  eq(API.rules.shiftInventoryProblem([{ productId: 'zz', left: 1 }, null], API.rules.SHAPE_ONLY), 'inventory', 'the rule itself');
+});
+
 atest('api shift reports: SETUP.md Part C describes the rules the server holds', async () => {
   await apiSetup();
   const part = SETUP.slice(SETUP.indexOf('## Part C'), SETUP.indexOf('## Part D'));

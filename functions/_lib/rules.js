@@ -387,6 +387,10 @@ export function viewProductIds(ev) {
 }
 // Why this count may not be stored, or null. `inv` is the body's (undefined or null: none).
 // `allowed` is { productId: true } (viewProductIds); every product counted must be in it.
+// `allowed` null (SHAPE_ONLY): the shape of EVERY element only, whatever products it names: an
+// admin's wasInventory, the count they were shown (review round 1, security S2: a bad element
+// after the first used to reach inventoryJson and fail as a 500).
+export const SHAPE_ONLY = null;
 export function shiftInventoryProblem(inv, allowed) {
   if (inv === undefined || inv === null) return null;
   if (!Array.isArray(inv) || inv.length > SHIFT_INVENTORY_MAX) return 'inventory';
@@ -397,7 +401,7 @@ export function shiftInventoryProblem(inv, allowed) {
     if (typeof x.productId !== 'string' || !SHIFT_INVENTORY_ID_RE.test(x.productId) || seen[x.productId]) return 'inventory';
     seen[x.productId] = true;
     if (typeof x.left !== 'number' || !Number.isInteger(x.left) || x.left < 0 || x.left > SHIFT_INVENTORY_LEFT_MAX) return 'inventory-left';
-    if (!allowed || allowed[x.productId] !== true) return 'inventory-product';
+    if (allowed !== null && (!allowed || allowed[x.productId] !== true)) return 'inventory-product';
   }
   return null;
 }
