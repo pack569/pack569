@@ -16335,6 +16335,30 @@ atest('shift report count: the parent who confirms reads neither the count nor t
 
 // Review round 1 (security S2): what an admin was shown is checked element by element, so a bad
 // element anywhere is a 400, never a 500.
+// Review round 1 follow-up: the published list narrows after a family sent a count (a leader
+// recorded hand-outs). Their edit keeps the products they already counted: shown, and accepted.
+atest('shift report count: a family’s edit keeps a product they counted after the list has narrowed', async () => {
+  const w = await srWorld();
+  srCountView(w, SR_PRODUCTS);
+  const rid = (await w.report('parent', { blockId: 'b1', inventory: [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 2 }] })).body.report.id;
+  srCountView(w, [SR_PRODUCTS[0]]);   // only p1 now
+  const edit = (inventory) => w.act('parent', rid, { action: 'edit', teCents: 12345, cashCents: 2500, attest: true, inventory });
+  const r = await edit([{ productId: 'p1', left: 3 }, { productId: 'p2', left: 1 }]);
+  eq([r.status, r.body.report.inventory], [200, [{ productId: 'p1', left: 3 }, { productId: 'p2', left: 1 }]], 'a product counted before stays accepted');
+  eq((await edit([{ productId: 'p3', left: 1 }])).body.reason, 'inventory-product', 'a product neither published nor counted before');
+  // The form shows it too, named from wherever the view still lists it, or plainly when nowhere does.
+  const ev = Object.assign(srEv(SR_TODAY), { products: [{ id: 'p1', name: 'Kettle Corn' }] });
+  const own = srReport({ id: 'r1', mine: true, inventory: [{ productId: 'p1', left: 4 }, { productId: 'p2', left: 2 }, { productId: 'p9', left: 1 }] });
+  const pv = { events: [ev, Object.assign(srEv('2026-10-02'), { sfId: 'sf2', products: [{ id: 'p2', name: 'Caramel Corn' }] })] };
+  const f = vm.runInContext('parentShiftReportCard', srStatusCtx({ pv, reports: [own],
+    ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: 'r1', te: '', cash: '', note: '', attest: false, left: { p1: '4', p2: '2', p9: '1' } } } }))({ events: [ev] }, SR_TODAY);
+  ok(/<span>Kettle Corn<\/span><input id="srLeft-p1"[^>]*value="4"/.test(f) && /<span>Caramel Corn<\/span><input id="srLeft-p2"[^>]*value="2"/.test(f) &&
+    /<span>A product you counted earlier<\/span><input id="srLeft-p9"[^>]*value="1"/.test(f), 'the edit form keeps them');
+  const fresh = vm.runInContext('parentShiftReportCard', srStatusCtx({ pv, reports: [own],
+    ui: { shiftReport: { sfId: 'sf1', blockId: 'b1', rid: '', te: '', cash: '', note: '', attest: false } } }))({ events: [ev] }, SR_TODAY);
+  ok(!/srLeft-p2|srLeft-p9/.test(fresh), 'a new report offers only the published list');
+});
+
 atest('shift report count: a malformed count in an admin’s “was shown” is a 400 wherever the bad element is', async () => {
   const w = await srWorld();
   srCountView(w, SR_PRODUCTS);
@@ -17713,6 +17737,7 @@ function srStatusCtx(o) {
     function accountsInForce() { return !!sync.user; }
     function cloudReady() { return !!(sync.backend && sync.backend.isOpen() && sync.docId); }
     function previewingParent() { return ${!!o.preview}; }
+    function parentDoc() { return ${JSON.stringify(o.pv || null)}; }
     function fmtDate(d) { return 'D' + d; }
     function todayISO() { return '2026-10-03'; }
     ${['esc', 'fmt', 'arrOf', 'isoPlusDays', 'SHIFT_REPORT_ROLES', 'SHIFT_REPORT_DAYS', 'SHIFT_REPORT_TZ', 'SHIFT_REPORT_NOTE_MAX',

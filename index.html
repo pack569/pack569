@@ -22130,6 +22130,20 @@
   // The form's optional section: one small whole-number field per product, labelled with its name.
   function parentShiftCountFields(e, d, bad) {
     var prods = arrOf(e && e.products).filter(function (p) { return p && typeof p.id === 'string' && SHIFT_COUNT_ID_RE.test(p.id) && p.name; });
+    // Editing your own report: the products it already counts stay, even if the list has narrowed
+    // since (a leader recorded hand-outs), as the admin's form keeps them and the server accepts
+    // them. Named from any storefront in the view that still lists them.
+    var own = d.rid ? arrOf(srParentStore() && srParentStore().reports).filter(function (r) { return r && r.id === d.rid && r.mine; })[0] : null;
+    var shown = prods.map(function (p) { return p.id; });
+    arrOf(own && own.inventory).forEach(function (x) {
+      if (!x || typeof x.productId !== 'string' || !SHIFT_COUNT_ID_RE.test(x.productId) || shown.indexOf(x.productId) !== -1) return;
+      var named = null;
+      arrOf(parentDoc() && parentDoc().events).forEach(function (ev) {
+        arrOf(ev && ev.products).forEach(function (p) { if (!named && p && p.id === x.productId && p.name) named = p; });
+      });
+      prods.push({ id: x.productId, name: named ? String(named.name) : 'A product you counted earlier' });
+      shown.push(x.productId);
+    });
     if (!prods.length) return '';
     var left = d.left || {};
     return '<fieldset class="sr-count"><legend>' + esc(SHIFT_REPORT_COUNT_LEGEND) + '</legend>' +

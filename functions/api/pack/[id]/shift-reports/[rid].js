@@ -164,10 +164,12 @@ async function patch({ request, db, packId, role, user, member, params }) {
     if (action === 'edit') {
       const why = shiftReportFiguresProblem(b);
       if (why) refuse(badRequest(why));
-      // The count: left out, it stays; given, it replaces the one there ([] clears it).
+      // The count: left out, it stays; given, it replaces the one there ([] clears it). A product the
+      // report already counts stays allowed, as in an admin's correction, so a list that narrowed
+      // since it was sent (a leader recorded hand-outs) never drops or refuses the family's count.
       let invJson = row.inventory_json || '';
       if (b.inventory !== undefined && b.inventory !== null) {
-        const invWhy = shiftInventoryProblem(b.inventory, Array.isArray(b.inventory) && b.inventory.length ? await allowedProducts(db, packId, row, false) : {});
+        const invWhy = shiftInventoryProblem(b.inventory, Array.isArray(b.inventory) && b.inventory.length ? await allowedProducts(db, packId, row, true) : {});
         if (invWhy) refuse(badRequest(invWhy));
         invJson = inventoryJson(b.inventory);
       }
